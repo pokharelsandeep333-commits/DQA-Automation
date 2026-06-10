@@ -5,7 +5,7 @@
 # ============================================================
 
 # --- DATA STORAGE BEGINS HERE ---
-$Global:SavedEmails = @("technician@example.com")
+$Global:SavedEmails = @("Sandeep.Pokharel@trojans.dsu.edu", "Sandesh.Dhakal@trojans.dsu.edu", "Tyler.Steele@trojans.dsu.edu", "Riley.Wermers@trojans.dsu.edu")
 $Global:DatabaseCSV = @"
 TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,WipedDown,PalmRest,Backplate,BaseAndVents,Hinge,Notes
 "@
@@ -100,7 +100,7 @@ function Get-PinInput {
     $label = New-Object System.Windows.Forms.Label
     $label.Location = New-Object System.Drawing.Point(10,15)
     $label.Size = New-Object System.Drawing.Size(240,20)
-    $label.Text = "Enter 4-digit PIN to clear the dashboard:"
+    $label.Text = "Enter 4-digit PIN to authorize:"
 
     $textBox = New-Object System.Windows.Forms.TextBox
     $textBox.Location = New-Object System.Drawing.Point(10,40)
@@ -326,8 +326,9 @@ function Show-DeleteEmailDialog {
                         </ComboBox>
                         <Button x:Name="RefreshBtn" Content="Refresh Page" Width="100" Height="30" Margin="0,0,10,0"/>
                         <Button x:Name="ExportBtn" Content="Export to CSV" Width="110" Height="30" Margin="0,0,10,0"/>
-                        <Button x:Name="DeleteDbBtn" Content="Clear Dashboard" Width="120" Height="30" Background="#DC3545" Foreground="White" Margin="0,0,10,0"/>
-                        <Button x:Name="DeleteEmailBtn" Content="Delete Email" Width="110" Height="30" Background="#6C757D" Foreground="White" FontWeight="Bold" BorderThickness="0"/>
+                        <Button x:Name="DeleteRowBtn" Content="Delete Selected" Width="110" Height="30" Background="#FD7E14" Foreground="White" Margin="0,0,10,0"/>
+                        <Button x:Name="DeleteDbBtn" Content="Clear All" Width="90" Height="30" Background="#DC3545" Foreground="White" Margin="0,0,10,0"/>
+                        <Button x:Name="DeleteEmailBtn" Content="Delete Email" Width="100" Height="30" Background="#6C757D" Foreground="White" FontWeight="Bold" BorderThickness="0"/>
                     </StackPanel>
                     <DataGrid x:Name="ResultsGrid" Grid.Row="2" AutoGenerateColumns="True" IsReadOnly="True" Margin="5" Background="White">
                         <DataGrid.RowStyle>
@@ -473,7 +474,6 @@ function Start-AutoDetect {
     } catch { $window.FindName("cbNetwork").SelectedItem = "Not Applicable" }
 }
 
-# Removed: $window.Add_Loaded({ Start-AutoDetect })
 $techEmailInput.Add_LostFocus({ Start-AutoDetect })
 $techEmailInput.Add_SelectionChanged({ Start-AutoDetect })
 
@@ -521,7 +521,7 @@ $Global:audioTimer.Add_Tick({
 
 $window.FindName("BtnTestAudio").Add_Click({
     
-    # NEW: Automatically force unmute and set system volume to exactly 50%
+    # Automatically force unmute and set system volume to exactly 50%
     try {
         $wshell = New-Object -ComObject wscript.shell
         for ($i = 0; $i -lt 50; $i++) { $wshell.SendKeys([char]174) } # Hammer Volume Down to hit 0 (forces unmute)
@@ -703,6 +703,58 @@ $window.FindName("ExportBtn").Add_Click({
     
     $exportData | Select-Object * -ExcludeProperty Id, RunDate, "start date", Status, FinalStatus | Export-Csv -Path $savePath -NoTypeInformation -Force
     [System.Windows.MessageBox]::Show("Output successfully exported to:`n$savePath", "Export Complete", "OK", "Information")
+})
+
+# ------------------------------------------------------------
+# DELETE SELECTED ROW (Requires PIN: 5555)
+# ------------------------------------------------------------
+$window.FindName("DeleteRowBtn").Add_Click({
+    $selectedItem = $resultsGrid.SelectedItem
+    
+    if ($null -eq $selectedItem) {
+        [System.Windows.MessageBox]::Show("Please select a laptop record from the dashboard to delete.", "No Selection", "OK", "Warning")
+        return
+    }
+
+    $enteredPin = Get-PinInput
+    
+    if ($enteredPin -eq "5555") {
+        # Convert current CSV to an ArrayList so we can target and remove a specific item
+        $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
+        $matchIndex = -1
+        
+        # Find the exact row to delete by matching SerialNumber and Duration
+        for ($i = 0; $i -lt $allData.Count; $i++) {
+            if ($allData[$i].SerialNumber -eq $selectedItem.SerialNumber -and $allData[$i].DurationHours -eq $selectedItem.DurationHours) {
+                $matchIndex = $i
+                break
+            }
+        }
+        
+        if ($matchIndex -ge 0) {
+            $allData.RemoveAt($matchIndex)
+            
+            $csvHeader = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,WipedDown,PalmRest,Backplate,BaseAndVents,Hinge,Notes"
+            
+            if ($allData.Count -gt 0) {
+                # Strip dynamic GUI properties before saving back to the static database array
+                $newCsvData = ($allData | Select-Object -Property TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,WipedDown,PalmRest,Backplate,BaseAndVents,Hinge,Notes | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
+                $Global:DatabaseCSV = $csvHeader + "`r`n" + $newCsvData
+            } else {
+                # If it was the last item, just keep the header
+                $Global:DatabaseCSV = $csvHeader
+            }
+
+            Update-ScriptData
+            Update-Dashboard
+            [System.Windows.MessageBox]::Show("Laptop record '$($selectedItem.SerialNumber)' has been securely deleted.", "Success", "OK", "Information")
+        } else {
+            [System.Windows.MessageBox]::Show("Could not locate the exact record in the database.", "Error", "OK", "Error")
+        }
+    }
+    elseif ($null -ne $enteredPin) {
+        [System.Windows.MessageBox]::Show("Incorrect PIN entered. Deletion canceled.", "Security Alert", "OK", "Error")
+    }
 })
 
 # ------------------------------------------------------------
