@@ -1,33 +1,42 @@
-# Device Quality Assurance (DQA) Automated GUI
+# Device Quality Assurance (DQA) Automation Tool
 
-A PowerShell-based automated hardware testing and cosmetic inspection dashboard. This tool is designed to streamline device intake, automate diagnostic checks, and maintain a persistent database of all inspections. 
+A complete, standalone PowerShell GUI designed to streamline hardware inspection and quality assurance workflows for IT support technicians. 
 
-**Author:** Sandeep Prasad Pokharel
+Originally developed to optimize help desk operations, this tool replaces manual laptop testing checklists with a streamlined dashboard that combines automated system detection, interactive hardware tests, and cosmetic grading into a single, user-friendly interface.
 
-## Features
-* **Auto-Trigger Hardware Detection:** Automatically pulls the device serial number, battery charging status, and network adapter status the moment a technician enters their email.
-* **Interactive Diagnostic Tests:** One-click launches for Windows Camera, web-based keyboard checkers, and an asynchronous audio/microphone recording test.
-* **Smart Autofill & Persistent Memory:** Automatically expands common email prefixes and remembers new technician emails for future sessions.
-* **Live Session Tracking:** Calculates and logs the exact time spent inspecting each device.
-* **Dashboard & Export:** Built-in dashboard to view all historical runs, filter by Pass/Fail status, and export results directly to a CSV file.
+## ✨ Features
 
-## Prerequisites
-* **Windows OS** (Relies on WMI and Windows-specific diagnostic tools)
-* **PowerShell 5.1** or newer
-* **SQLite Module:** The script requires the accompanying `DQA_Database.psm1` to function.
+* **Automated System Detection:** Immediately detects and logs the device's Serial Number, Battery/Charging status, and Network Adapters the moment a technician is selected—no manual prompts required.
+* **Interactive Hardware Diagnostics:** * **Audio/Mic Test:** Automatically unmutes the system, sets volume exactly to 50%, and records/plays back a 10-second mic test.
+  * **Camera & Keyboard:** One-click launch buttons for local camera checks and web-based keyboard ghosting tests.
+* **Self-Contained Local Database:** The script acts as its own database, rewriting itself to store the CSV array internally. This allows the tool to be entirely portable on a USB drive without requiring SQL or external file dependencies.
+* **Custom CSV Exports:** Easily export session data to a local drive or USB. The export function is tailored for clean reporting, intentionally stripping out internal tracking columns (like `Id`, `start date`, and `Status`) to provide a clean data set.
+* **Live Analytics Dashboard:** Track daily productivity with real-time metrics, including Total Runs, Pass/Fail ratios, and the Average Duration of each inspection.
+* **Secure Environment:** Features a PIN-protected (default: `5555`) wipe function to clear local script memory between deployment batches.
 
-## Installation & Setup
-1. Download or clone this repository to your local machine or a portable USB drive.
-2. Ensure both `DQA_GUI.ps1` and `DQA_Database.psm1` are in the same folder.
-3. The script will automatically generate a `DQA_History.db` and `DQA_Emails.txt` file in the same directory upon first run.
+## 🚀 Prerequisites
 
-## Usage
-1. Right-click `DQA_GUI.ps1` and select **Run with PowerShell**.
-2. Select your email from the dropdown (or type a new one) to trigger auto-detection.
-3. Run through the interactive hardware tests.
-4. Fill out the visual/cosmetic inspection fields.
-5. Click **Save Inspection** to log the data and clear the form for the next device.
+* **OS:** Windows 10 or Windows 11
+* **Framework:** Windows PowerShell 5.1+
+* **Permissions:** No administrative privileges required for basic operation (though some WMI queries may require elevation depending on group policy).
 
-## Links
-Github: https://github.com/pokharelsandeep333-commits
-Linkedin: https://www.linkedin.com/in/sandeeppokharel333
+## 🛠️ Usage
+
+1. Clone or download the repository to your local machine or a portable USB drive.
+2. Right-click the `DQA_GUI.ps1` file and select **Run with PowerShell**.
+3. **Pre-Check:** Ensure the device is connected to a network and plugged into power.
+4. **Begin Inspection:** * Select or type a technician email in the dropdown.
+   * *Note: Providing an email automatically triggers the hardware detection for Serial Number, Network, and Charging status.*
+5. Run through the interactive tests (Camera, Audio, Keys) and log the physical/cosmetic conditions using the dropdowns.
+6. Click **Save Inspection** to commit the record to the local dashboard.
+
+## 📂 Exporting Data
+
+Navigate to the **Dashboard & History** tab to view all saved inspections. Click **Export to CSV** to automatically generate a clean output file to your desktop or a connected USB drive. 
+
+## 🛡️ Privacy & Security
+
+This script is designed for internal network operations. Ensure that no sensitive technician emails or actual network credentials are hardcoded into the `$Global:SavedEmails` array if cloning or forking this repository for public use.
+
+---
+*Built for fast, consistent, and reliable IT deployments.*
