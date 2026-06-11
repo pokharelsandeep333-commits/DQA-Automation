@@ -5,7 +5,7 @@
 # ============================================================
 
 # --- DATA STORAGE BEGINS HERE ---
-$Global:SavedEmails = @("Sandeep.Pokharel@trojans.dsu.edu", "Sandesh.Dhakal@trojans.dsu.edu", "Tyler.Steele@trojans.dsu.edu", "Riley.Wermers@trojans.dsu.edu")
+$Global:SavedEmails = @("technician@example.com")
 $Global:DatabaseCSV = @"
 TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,WipedDown,PalmRest,Backplate,BaseAndVents,Hinge,Notes
 "@
