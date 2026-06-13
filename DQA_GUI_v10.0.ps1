@@ -5,9 +5,9 @@
 # ============================================================
 
 # --- DATA STORAGE BEGINS HERE ---
-$Global:SavedEmails = @("technician@example.com")
+$Global:SavedEmails = @("Sandeep.Pokharel@trojans.dsu.edu", "Sandesh.Dhakal@trojans.dsu.edu", "Tyler.Steele@trojans.dsu.edu", "Riley.Wermers@trojans.dsu.edu")
 $Global:DatabaseCSV = @"
-TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,WipedDown,PalmRest,Backplate,BaseAndVents,Hinge,Notes
+TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus
 "@
 # --- DATA STORAGE ENDS HERE ---
 
@@ -18,18 +18,22 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # ------------------------------------------------------------
-# DURATION TRACKER & ASYNC AUDIO SETUP
+# DURATION TRACKER & ASYNC AUDIO SETUP (WITH CORE AUDIO API)
 # ------------------------------------------------------------
 $Global:sessionStartTime = Get-Date
 
+# Adjusted C# code to be fully compatible with PowerShell 5.1's compiler
 $AudioCode = @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
+
 public class AudioHelper {
+    // Audio Recording Helper
     [DllImport("winmm.dll", EntryPoint="mciSendStringA", CharSet=CharSet.Ansi)]
-    public static extern int mciSendString(string cmd, StringBuilder ret, int len, IntPtr hwnd);
+    public static extern int mciSendString(string cmd, IntPtr ret, int len, IntPtr hwnd);
+    
     public static void PlayScale() {
         int[] notes = { 523, 659, 784, 1047, 784, 659, 523 };
         for(int i = 0; i < 5; i++) {
@@ -39,6 +43,56 @@ public class AudioHelper {
         Console.Beep(1000, 1000);
     }
     public static void PlayScaleAsync() { Task.Run(() => PlayScale()); }
+
+    // Core Audio API for Direct Volume Control
+    [ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IAudioEndpointVolume {
+        int RegisterControlChangeNotify(IntPtr pNotify);
+        int UnregisterControlChangeNotify(IntPtr pNotify);
+        int GetChannelCount(out int pnChannelCount);
+        int SetMasterVolumeLevel(float fLevelDB, IntPtr pguidEventContext);
+        int SetMasterVolumeLevelScalar(float fLevel, IntPtr pguidEventContext);
+        int GetMasterVolumeLevel(out float pfLevelDB);
+        int GetMasterVolumeLevelScalar(out float pfLevel);
+        int SetChannelVolumeLevel(uint nChannel, float fLevelDB, IntPtr pguidEventContext);
+        int SetChannelVolumeLevelScalar(uint nChannel, float fLevel, IntPtr pguidEventContext);
+        int GetChannelVolumeLevel(uint nChannel, out float pfLevelDB);
+        int GetChannelVolumeLevelScalar(uint nChannel, out float pfLevel);
+        int SetMute(bool bMute, IntPtr pguidEventContext);
+        int GetMute(out bool pbMute);
+    }
+
+    [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMMDevice {
+        int Activate(ref Guid id, int clsCtx, IntPtr activationParams, out IAudioEndpointVolume ppInterface);
+    }
+
+    [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMMDeviceEnumerator {
+        int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr ppDevices);
+        int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice ppEndpoint);
+    }
+
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    public class MMDeviceEnumeratorComObject { }
+
+    public static void SetVolume(int targetLevel) {
+        try {
+            IMMDeviceEnumerator enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+            IMMDevice device = null;
+            enumerator.GetDefaultAudioEndpoint(0, 1, out device);
+            Guid epvid = typeof(IAudioEndpointVolume).GUID;
+            IAudioEndpointVolume volume = null;
+            device.Activate(ref epvid, 1, IntPtr.Zero, out volume);
+            
+            // Instantly un-mutes if currently muted
+            volume.SetMute(false, IntPtr.Zero);
+            
+            // Instantly sets volume to exact percentage
+            float levelScalar = targetLevel / 100f;
+            volume.SetMasterVolumeLevelScalar(levelScalar, IntPtr.Zero);
+        } catch { }
+    }
 }
 '@
 Add-Type -TypeDefinition $AudioCode -ErrorAction SilentlyContinue
@@ -60,17 +114,13 @@ function Update-ScriptData {
     foreach ($line in $lines) {
         if ($line -match "^# --- DATA STORAGE BEGINS HERE ---") {
             $newLines += $line
-            
-            # Reconstruct the Email Array
             $cleanEmails = @($Global:SavedEmails | Select-Object -Unique | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             $emailItems  = ($cleanEmails | ForEach-Object { '"' + $_ + '"' }) -join ", "
             $newLines   += ('$Global:SavedEmails = @(' + $emailItems + ')')
             
-            # Reconstruct the CSV Here-String
             $newLines += "`$Global:DatabaseCSV = @`""
             $newLines += $Global:DatabaseCSV.Trim()
             $newLines += "`"@"
-            
             $inDataBlock = $true
         }
         elseif ($line -match "^# --- DATA STORAGE ENDS HERE ---") {
@@ -140,7 +190,6 @@ function Format-TitleCaseEmail {
     $parts     = $email -split "@", 2
     $localPart = $parts[0]
     $domain    = $parts[1]
-    # Split on dot, title-case each word, rejoin
     $words     = $localPart -split "\."
     $titled    = $words | ForEach-Object {
         if ($_.Length -gt 0) { $_.Substring(0,1).ToUpper() + $_.Substring(1).ToLower() }
@@ -254,38 +303,59 @@ function Show-DeleteEmailDialog {
                                 <TextBlock Text="Network Adapters (Auto):" FontWeight="SemiBold"/><ComboBox x:Name="cbNetwork" Height="28" Margin="0,0,0,15"/>
 
                                 <TextBlock Text="Interactive Tests" FontSize="18" FontWeight="Bold" Foreground="#002D62" Margin="0,10,0,10"/>
-                                <Grid Margin="0,0,0,5">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                    <Button x:Name="BtnTestCamera" Grid.Column="0" Content="1. Launch Camera" Margin="0,0,5,0" Height="30"/>
-                                    <Button x:Name="BtnTestAudio" Grid.Column="1" Content="2. Test Audio/Mic" Margin="5,0,5,0" Height="30"/>
-                                    <Button x:Name="BtnTestKeys" Grid.Column="2" Content="3. Keyboard Web Test" Margin="5,0,0,0" Height="30"/>
+                                
+                                <Grid Margin="0,0,0,15">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    
+                                    <Button x:Name="BtnTestCamera" Grid.Column="0" Grid.Row="0" Content="1. Launch Camera" Margin="0,0,5,5" Height="30"/>
+                                    <Button x:Name="BtnTestAudio" Grid.Column="1" Grid.Row="0" Content="2. Test Audio/Mic" Margin="5,0,5,5" Height="30"/>
+                                    <Button x:Name="BtnTestKeys" Grid.Column="2" Grid.Row="0" Content="3. Keyboard Web Test" Margin="5,0,0,5" Height="30"/>
+                                    
+                                    <TextBlock Text="Camera Status:" Grid.Column="0" Grid.Row="1" FontSize="12" Foreground="#666" Margin="0,0,5,2"/>
+                                    <TextBlock Text="Audio/Mic Status:" Grid.Column="1" Grid.Row="1" FontSize="12" Foreground="#666" Margin="5,0,5,2"/>
+                                    <TextBlock Text="Keyboard Status:" Grid.Column="2" Grid.Row="1" FontSize="12" Foreground="#666" Margin="5,0,0,2"/>
+
+                                    <ComboBox x:Name="cbCamera" Grid.Column="0" Grid.Row="2" Height="26" Margin="0,0,5,0"/>
+                                    <StackPanel Grid.Column="1" Grid.Row="2" Margin="5,0,5,0">
+                                        <ComboBox x:Name="cbAudio" Height="26" Margin="0,0,0,4"/>
+                                        <ComboBox x:Name="cbMic" Height="26"/>
+                                    </StackPanel>
+                                    <ComboBox x:Name="cbKeyboard" Grid.Column="2" Grid.Row="2" Height="26" Margin="5,0,0,0" VerticalAlignment="Top"/>
                                 </Grid>
                                 
-                                <TextBlock x:Name="AudioStatusLabel" Text=" " FontWeight="Bold" Margin="0,0,0,15" Height="20"/>
+                                <TextBlock x:Name="AudioStatusLabel" Text=" " FontWeight="Bold" Margin="0,0,0,10" Height="20"/>
 
-                                <TextBlock Text="Post-Test Results:" FontWeight="SemiBold" Foreground="#888"/>
+                                <TextBlock Text="Other Hardware:" FontWeight="SemiBold" Foreground="#888" Margin="0,5,0,5"/>
                                 <Grid>
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <StackPanel Grid.Column="0" Margin="0,0,5,0">
-                                        <TextBlock Text="Camera:"/><ComboBox x:Name="cbCamera" Height="26" Margin="0,0,0,5"/>
-                                        <TextBlock Text="Audio Output:"/><ComboBox x:Name="cbAudio" Height="26" Margin="0,0,0,5"/>
-                                        <TextBlock Text="Microphone:"/><ComboBox x:Name="cbMic" Height="26"/>
+                                        <TextBlock Text="Mouse/Trackpad:"/><ComboBox x:Name="cbMouse" Height="26" Margin="0,0,0,5"/>
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" Margin="5,0,0,0">
-                                        <TextBlock Text="Keyboard:"/><ComboBox x:Name="cbKeyboard" Height="26" Margin="0,0,0,5"/>
-                                        <TextBlock Text="Mouse/Trackpad:"/><ComboBox x:Name="cbMouse" Height="26" Margin="0,0,0,5"/>
                                         <TextBlock Text="USB Ports:"/><ComboBox x:Name="cbUSB" Height="26"/>
                                     </StackPanel>
                                 </Grid>
                             </StackPanel>
 
                             <StackPanel Grid.Column="1" Margin="15,0,0,0">
-                                <TextBlock Text="Manual &amp; Cosmetic Inspection" FontSize="18" FontWeight="Bold" Foreground="#002D62" Margin="0,0,0,10"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <TextBlock Text="Manual &amp; Cosmetic Inspection" FontSize="18" FontWeight="Bold" Foreground="#002D62" VerticalAlignment="Center"/>
+                                    <Button x:Name="BtnAutoFill" Content="Auto-Fill Remaining to Operational" Height="25" Width="220" Margin="15,0,0,0" Background="#28A745" Foreground="White" FontSize="12"/>
+                                </StackPanel>
+                                
                                 <TextBlock Text="Screen (Visual):"/><ComboBox x:Name="cbScreen" Height="26" Margin="0,0,0,5"/>
                                 <TextBlock Text="Touchscreen:"/><ComboBox x:Name="cbTouch" Height="26" Margin="0,0,0,5"/>
                                 <TextBlock Text="Video Ports (Ext. Monitor):"/><ComboBox x:Name="cbVideo" Height="26" Margin="0,0,0,15"/>
 
-                                <TextBlock Text="Wiped Down (Yes/No):"/><ComboBox x:Name="cbWiped" Height="26" Margin="0,0,0,5"/>
                                 <TextBlock Text="Palm Rest:"/><ComboBox x:Name="cbPalm" Height="26" Margin="0,0,0,5"/>
                                 <TextBlock Text="Backplate:"/><ComboBox x:Name="cbBackplate" Height="26" Margin="0,0,0,5"/>
                                 <TextBlock Text="Base and Vents:"/><ComboBox x:Name="cbBase" Height="26" Margin="0,0,0,5"/>
@@ -297,7 +367,7 @@ function Show-DeleteEmailDialog {
                                 </StackPanel>
                                 <TextBox x:Name="NotesInput" Height="60" TextWrapping="Wrap" AcceptsReturn="True" Margin="0,0,0,15"/>
 
-                                <Button x:Name="SaveInspectionBtn" Content="SAVE INSPECTION" Height="45" FontSize="16" Margin="0,0,0,8"/>
+                                <Button x:Name="SaveInspectionBtn" Content="SAVE INSPECTION" Height="45" FontSize="16" Margin="0,0,0,8" IsEnabled="False" Opacity="0.5"/>
                                 <Button x:Name="ResetFormBtn" Content="Reset / Clear Form" Height="32" FontSize="13" Background="#6C757D" Foreground="White" FontWeight="Bold" BorderThickness="0"/>
                                 <TextBlock x:Name="LastSavedLabel" Text=" " Foreground="#28A745" FontWeight="Bold" Margin="0,10,0,0" HorizontalAlignment="Center"/>
                             </StackPanel>
@@ -367,11 +437,12 @@ $lastSavedLabel = $window.FindName("LastSavedLabel")
 $resultsGrid = $window.FindName("ResultsGrid")
 $searchBox = $window.FindName("SearchBox")
 $searchPlaceholder = $window.FindName("SearchPlaceholder")
+$saveInspectionBtn = $window.FindName("SaveInspectionBtn")
 
 $techEmailInput.ItemsSource = $Global:SavedEmails
 
-$hwOptions = @("Operational", "Defective", "Not Applicable")
-$cosmeticOptions = @("Acceptable", "Needs Repair", "Not Applicable")
+$hwOptions = @("", "Operational", "Defective", "Not Applicable")
+$cosmeticOptions = @("", "Acceptable", "Needs Repair", "Not Applicable")
 
 $hwBoxes = @("cbCharging", "cbScreen", "cbTouch", "cbNetwork", "cbKeyboard", "cbMouse", "cbVideo", "cbAudio", "cbMic", "cbCamera", "cbUSB")
 foreach ($box in $hwBoxes) { $window.FindName($box).ItemsSource = $hwOptions; $window.FindName($box).SelectedIndex = 0 }
@@ -379,8 +450,39 @@ foreach ($box in $hwBoxes) { $window.FindName($box).ItemsSource = $hwOptions; $w
 $cosmeticBoxes = @("cbPalm", "cbBackplate", "cbBase", "cbHinge")
 foreach ($box in $cosmeticBoxes) { $window.FindName($box).ItemsSource = $cosmeticOptions; $window.FindName($box).SelectedIndex = 0 }
 
-$window.FindName("cbWiped").ItemsSource = @("Yes", "No")
-$window.FindName("cbWiped").SelectedIndex = 0
+
+# ------------------------------------------------------------
+# FORM COMPLETION CHECKER (Disables Save until complete)
+# ------------------------------------------------------------
+function Check-FormCompletion {
+    $allFilled = $true
+    
+    if ([string]::IsNullOrWhiteSpace($techEmailInput.Text) -or [string]::IsNullOrWhiteSpace($serialInput.Text)) { 
+        $allFilled = $false 
+    }
+    
+    $reqBoxes = @("cbCharging","cbScreen","cbTouch","cbNetwork","cbKeyboard","cbMouse","cbVideo","cbAudio","cbMic","cbCamera","cbUSB","cbPalm","cbBackplate","cbBase","cbHinge")
+    foreach ($box in $reqBoxes) {
+        $selectedVal = $window.FindName($box).SelectedItem
+        if ([string]::IsNullOrWhiteSpace($selectedVal) -or $selectedVal -eq "") { 
+            $allFilled = $false 
+        }
+    }
+    
+    if ($allFilled) {
+        $saveInspectionBtn.IsEnabled = $true
+        $saveInspectionBtn.Opacity = 1.0
+    } else {
+        $saveInspectionBtn.IsEnabled = $false
+        $saveInspectionBtn.Opacity = 0.5
+    }
+}
+
+$techEmailInput.Add_KeyUp({ Check-FormCompletion })
+$serialInput.Add_TextChanged({ Check-FormCompletion })
+foreach ($box in $hwBoxes) { $window.FindName($box).Add_SelectionChanged({ Check-FormCompletion }) }
+foreach ($box in $cosmeticBoxes) { $window.FindName($box).Add_SelectionChanged({ Check-FormCompletion }) }
+
 
 # ------------------------------------------------------------
 # DASHBOARD CLEANUP
@@ -454,9 +556,7 @@ $searchBox.Add_TextChanged({
 # 1. AUTO-DETECT (Triggers only after Email is provided)
 # ------------------------------------------------------------
 function Start-AutoDetect {
-    # Delay requirement: Do not run if email is blank
     if ([string]::IsNullOrWhiteSpace($techEmailInput.Text)) { return }
-    # Do not overwrite if a serial is already there
     if ($serialInput.Text -ne "" -and $serialInput.Text -ne "UNKNOWN") { return }
 
     try { $serialInput.Text = (Get-WmiObject Win32_BIOS).SerialNumber.Trim() } catch { $serialInput.Text = "UNKNOWN" }
@@ -472,22 +572,35 @@ function Start-AutoDetect {
         if ($adapters) { $window.FindName("cbNetwork").SelectedItem = "Operational" }
         else { $window.FindName("cbNetwork").SelectedItem = "Defective" }
     } catch { $window.FindName("cbNetwork").SelectedItem = "Not Applicable" }
+    
+    Check-FormCompletion
 }
 
 $techEmailInput.Add_LostFocus({ Start-AutoDetect })
 $techEmailInput.Add_SelectionChanged({ Start-AutoDetect })
 
 # ------------------------------------------------------------
-# 2. CAMERA & KEYBOARD TESTS
+# 2. CAMERA & KEYBOARD TESTS (Interactive Prompts)
 # ------------------------------------------------------------
-$window.FindName("BtnTestCamera").Add_Click({ Start-Process "microsoft.windows.camera:" })
-$window.FindName("BtnTestKeys").Add_Click({ Start-Process "https://keyboardchecker.com/" })
+$window.FindName("BtnTestCamera").Add_Click({ 
+    Start-Process "microsoft.windows.camera:" 
+    $res = [System.Windows.MessageBox]::Show("Did the camera work properly?", "Camera Test", "YesNo", "Question")
+    if ($res -eq "Yes") { $window.FindName("cbCamera").SelectedItem = "Operational" }
+    elseif ($res -eq "No") { $window.FindName("cbCamera").SelectedItem = "Defective" }
+})
+
+$window.FindName("BtnTestKeys").Add_Click({ 
+    Start-Process "https://keyboardchecker.com/" 
+    $res = [System.Windows.MessageBox]::Show("Did all the keys on the keyboard work properly?", "Keyboard Test", "YesNo", "Question")
+    if ($res -eq "Yes") { $window.FindName("cbKeyboard").SelectedItem = "Operational" }
+    elseif ($res -eq "No") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
+})
 
 # ------------------------------------------------------------
-# 3. ASYNC AUDIO & MIC TEST (With Auto-Volume 50%)
+# 3. ASYNC AUDIO & MIC TEST (With Direct Volume API & Prompts)
 # ------------------------------------------------------------
 $Global:audioTimer = New-Object System.Windows.Threading.DispatcherTimer
-$Global:audioTimer.Interval = [TimeSpan]::FromSeconds(10)
+$Global:audioTimer.Interval = [TimeSpan]::FromSeconds(5)
 $Global:audioState = 0
 $Global:tempAudioPath = "$env:TEMP\DQA_MicTest.wav"
 $Global:soundPlayer = New-Object System.Media.SoundPlayer
@@ -497,9 +610,9 @@ $Global:audioTimer.Add_Tick({
     
     if ($Global:audioState -eq 1) {
         $saveCmd = 'save recsound "' + $Global:tempAudioPath + '"'
-        [AudioHelper]::mciSendString("stop recsound",  $null, 0, [IntPtr]::Zero) | Out-Null
-        [AudioHelper]::mciSendString($saveCmd,         $null, 0, [IntPtr]::Zero) | Out-Null
-        [AudioHelper]::mciSendString("close recsound", $null, 0, [IntPtr]::Zero) | Out-Null
+        [AudioHelper]::mciSendString("stop recsound",  [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+        [AudioHelper]::mciSendString($saveCmd,         [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+        [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
 
         $audioStatusLabel.Text = "[PLAYING] Audio playing back... Listen to your speakers."
         $audioStatusLabel.Foreground = "#002D62"
@@ -516,27 +629,59 @@ $Global:audioTimer.Add_Tick({
         $audioStatusLabel.Text = "[DONE] Audio test complete."
         $audioStatusLabel.Foreground = "#28A745"
         Remove-Item $Global:tempAudioPath -Force -ErrorAction SilentlyContinue
+        
+        $resAudio = [System.Windows.MessageBox]::Show("Did you hear the audio playing from speakers or not?", "Speaker Test", "YesNo", "Question")
+        if ($resAudio -eq "Yes") { 
+            $window.FindName("cbAudio").SelectedItem = "Operational"
+        } elseif ($resAudio -eq "No") { 
+            $window.FindName("cbAudio").SelectedItem = "Defective"
+        }
+
+        $resMic = [System.Windows.MessageBox]::Show("Did you hear audio playback sound and your voice or clap?", "Microphone Test", "YesNo", "Question")
+        if ($resMic -eq "Yes") { 
+            $window.FindName("cbMic").SelectedItem = "Operational"
+        } elseif ($resMic -eq "No") { 
+            $window.FindName("cbMic").SelectedItem = "Defective"
+        }
     }
 })
 
 $window.FindName("BtnTestAudio").Add_Click({
     
-    # Automatically force unmute and set system volume to exactly 50%
-    try {
-        $wshell = New-Object -ComObject wscript.shell
-        for ($i = 0; $i -lt 50; $i++) { $wshell.SendKeys([char]174) } # Hammer Volume Down to hit 0 (forces unmute)
-        for ($i = 0; $i -lt 25; $i++) { $wshell.SendKeys([char]175) } # Bring Volume Up exactly 25 times (50%)
-    } catch {}
+    # Automatically force unmute and set system volume to exactly 50% using Core Audio API
+    [AudioHelper]::SetVolume(50)
 
-    $audioStatusLabel.Text = "[RECORDING] 10s... SPEAK or CLAP now!"
+    $audioStatusLabel.Text = "[RECORDING] 5s... SPEAK or CLAP now!"
     $audioStatusLabel.Foreground = "#DC3545"
     
-    [AudioHelper]::mciSendString("open new type waveaudio alias recsound", $null, 0, [IntPtr]::Zero) | Out-Null
-    [AudioHelper]::mciSendString("record recsound", $null, 0, [IntPtr]::Zero) | Out-Null
+    [AudioHelper]::mciSendString("open new type waveaudio alias recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+    [AudioHelper]::mciSendString("record recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
     [AudioHelper]::PlayScaleAsync()
     
     $Global:audioState = 1
     $Global:audioTimer.Start()
+})
+
+# ------------------------------------------------------------
+# AUTO-FILL REMAINING TO OPERATIONAL (Excludes Auto-Detected & Interactive Tests)
+# ------------------------------------------------------------
+$window.FindName("BtnAutoFill").Add_Click({
+    # Excludes cbCharging and cbNetwork (which auto-detect) 
+    # Excludes Cam, Audio, Mic, Keyboard (which have interactive prompts)
+    $hwBoxesToFill = @("cbScreen","cbTouch","cbMouse","cbVideo","cbUSB")
+    foreach ($box in $hwBoxesToFill) {
+        if ([string]::IsNullOrWhiteSpace($window.FindName($box).Text)) { 
+            $window.FindName($box).SelectedItem = "Operational" 
+        }
+    }
+    
+    $cosmeticBoxesToFill = @("cbPalm","cbBackplate","cbBase","cbHinge")
+    foreach ($box in $cosmeticBoxesToFill) {
+        if ([string]::IsNullOrWhiteSpace($window.FindName($box).Text)) { 
+            $window.FindName($box).SelectedItem = "Acceptable" 
+        }
+    }
+    Check-FormCompletion
 })
 
 # ------------------------------------------------------------
@@ -551,7 +696,6 @@ $window.FindName("SaveInspectionBtn").Add_Click({
     $rawEmail = $techEmailInput.Text.Trim()
     if ($rawEmail -match "(?i)^sandeep") { $rawEmail = "Sandeep.Pokharel@trojans.dsu.edu" }
     elseif ($rawEmail -match "(?i)^sandesh") { $rawEmail = "Sandesh.Dhakal@trojans.dsu.edu" }
-    # Title-case whatever email was typed
     $rawEmail = Format-TitleCaseEmail $rawEmail
     $techEmailInput.Text = $rawEmail
 
@@ -562,7 +706,6 @@ $window.FindName("SaveInspectionBtn").Add_Click({
 
     $savedSerial = $serialInput.Text
 
-    # Duplicate serial number check
     $existingSerials = @()
     if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
         $existingSerials = @($Global:DatabaseCSV | ConvertFrom-Csv | Select-Object -ExpandProperty SerialNumber -ErrorAction SilentlyContinue)
@@ -582,7 +725,7 @@ $window.FindName("SaveInspectionBtn").Add_Click({
         Keyboard = $window.FindName("cbKeyboard").Text; MouseTrackpad = $window.FindName("cbMouse").Text
         VideoPorts = $window.FindName("cbVideo").Text; AudioOutput = $window.FindName("cbAudio").Text
         Microphone = $window.FindName("cbMic").Text; Camera = $window.FindName("cbCamera").Text
-        USBPorts = $window.FindName("cbUSB").Text; WipedDown = $window.FindName("cbWiped").Text
+        USBPorts = $window.FindName("cbUSB").Text
         PalmRest = $window.FindName("cbPalm").Text; Backplate = $window.FindName("cbBackplate").Text
         BaseAndVents = $window.FindName("cbBase").Text; Hinge = $window.FindName("cbHinge").Text
         Notes = $notesInput.Text
@@ -591,6 +734,8 @@ $window.FindName("SaveInspectionBtn").Add_Click({
     $failFound = $false
     foreach ($val in $R.Values) { if ($val -eq "Defective" -or $val -eq "Needs Repair") { $failFound = $true } }
     $FinalStatusDisplay = if ($failFound) { "FAILED" } else { "PASSED" }
+
+    $R.Add("FinalStatus", $FinalStatusDisplay)
 
     if ($rawEmail -notin $Global:SavedEmails) {
         $Global:SavedEmails += $rawEmail
@@ -604,11 +749,15 @@ $window.FindName("SaveInspectionBtn").Add_Click({
 
     [System.Windows.MessageBox]::Show("Inspection saved inside the script! Status: $FinalStatusDisplay", "Success", "OK", "Information")
     
-    # QOL: Update the Last Saved Label
     $lastSavedLabel.Text = "Last saved: $savedSerial at $((Get-Date).ToString('hh:mm tt'))"
 
     $serialInput.Text = ""; $notesInput.Text = ""; $audioStatusLabel.Text = " "
     $Global:sessionStartTime = Get-Date 
+    
+    foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
+    foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
+    
+    Check-FormCompletion
     Update-Dashboard
 })
 
@@ -657,13 +806,9 @@ $window.FindName("ResetFormBtn").Add_Click({
     $techEmailInput.Text     = ""
     $lastSavedLabel.Text     = " "
     $Global:sessionStartTime = Get-Date
-    foreach ($box in @("cbCharging","cbScreen","cbTouch","cbNetwork","cbKeyboard","cbMouse","cbVideo","cbAudio","cbMic","cbCamera","cbUSB")) {
-        $window.FindName($box).SelectedIndex = 0
-    }
-    foreach ($box in @("cbPalm","cbBackplate","cbBase","cbHinge")) {
-        $window.FindName($box).SelectedIndex = 0
-    }
-    $window.FindName("cbWiped").SelectedIndex = 0
+    foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
+    foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
+    Check-FormCompletion
 })
 
 # ------------------------------------------------------------
@@ -701,7 +846,7 @@ $window.FindName("ExportBtn").Add_Click({
     
     $savePath = "$exportDir\DQA_Output_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"
     
-    $exportData | Select-Object * -ExcludeProperty Id, RunDate, "start date", Status, FinalStatus | Export-Csv -Path $savePath -NoTypeInformation -Force
+    $exportData | Select-Object * -ExcludeProperty Id, RunDate, "start date", Status | Export-Csv -Path $savePath -NoTypeInformation -Force
     [System.Windows.MessageBox]::Show("Output successfully exported to:`n$savePath", "Export Complete", "OK", "Information")
 })
 
@@ -719,11 +864,9 @@ $window.FindName("DeleteRowBtn").Add_Click({
     $enteredPin = Get-PinInput
     
     if ($enteredPin -eq "5555") {
-        # Convert current CSV to an ArrayList so we can target and remove a specific item
         $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
         $matchIndex = -1
         
-        # Find the exact row to delete by matching SerialNumber and Duration
         for ($i = 0; $i -lt $allData.Count; $i++) {
             if ($allData[$i].SerialNumber -eq $selectedItem.SerialNumber -and $allData[$i].DurationHours -eq $selectedItem.DurationHours) {
                 $matchIndex = $i
@@ -734,14 +877,12 @@ $window.FindName("DeleteRowBtn").Add_Click({
         if ($matchIndex -ge 0) {
             $allData.RemoveAt($matchIndex)
             
-            $csvHeader = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,WipedDown,PalmRest,Backplate,BaseAndVents,Hinge,Notes"
+            $csvHeader = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
             
             if ($allData.Count -gt 0) {
-                # Strip dynamic GUI properties before saving back to the static database array
-                $newCsvData = ($allData | Select-Object -Property TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,WipedDown,PalmRest,Backplate,BaseAndVents,Hinge,Notes | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
+                $newCsvData = ($allData | Select-Object -Property TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
                 $Global:DatabaseCSV = $csvHeader + "`r`n" + $newCsvData
             } else {
-                # If it was the last item, just keep the header
                 $Global:DatabaseCSV = $csvHeader
             }
 
@@ -764,7 +905,7 @@ $window.FindName("DeleteDbBtn").Add_Click({
     $enteredPin = Get-PinInput
     
     if ($enteredPin -eq "5555") {
-        $Global:DatabaseCSV = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,WipedDown,PalmRest,Backplate,BaseAndVents,Hinge,Notes"
+        $Global:DatabaseCSV = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
         Update-ScriptData
         Update-Dashboard
         [System.Windows.MessageBox]::Show("Laptop history securely cleared from script memory.", "Success", "OK", "Information")
