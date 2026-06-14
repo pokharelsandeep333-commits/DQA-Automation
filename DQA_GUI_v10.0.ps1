@@ -18,6 +18,11 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # ------------------------------------------------------------
+# GLOBAL CONFIGURATION
+# ------------------------------------------------------------
+$Global:AdminPin = "5555"
+
+# ------------------------------------------------------------
 # DURATION TRACKER & ASYNC AUDIO SETUP (WITH CORE AUDIO API)
 # ------------------------------------------------------------
 $Global:sessionStartTime = Get-Date
@@ -177,6 +182,8 @@ function Get-PinInput {
     $pinForm.AcceptButton = $okButton
     $pinForm.CancelButton = $cancelButton
 
+    $pinForm.Add_Shown({ $textBox.Focus() })
+
     $result = $pinForm.ShowDialog()
     if ($result -eq "OK") { return $textBox.Text } else { return $null }
 }
@@ -240,11 +247,292 @@ function Show-DeleteEmailDialog {
     $delForm.AcceptButton = $deleteBtn
     $delForm.CancelButton = $cancelBtn
 
+    $delForm.Add_Shown({ $listBox.Focus() })
+
     $result = $delForm.ShowDialog()
     if ($result -eq "OK" -and $listBox.SelectedItem) {
         return $listBox.SelectedItem
     }
     return $null
+}
+
+# ------------------------------------------------------------
+# NATIVE KEYBOARD TESTER
+# ------------------------------------------------------------
+function Show-KeyboardTester {
+    $kbdXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Native Keyboard Tester" Height="600" Width="1000" WindowStartupLocation="CenterScreen" Background="#2C3E50" Topmost="True" Focusable="True">
+    <Window.Resources>
+        <Style TargetType="Border">
+            <Setter Property="Background" Value="#34495E"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="BorderBrush" Value="#2C3E50"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Focusable" Value="False"/> <!-- Prevents Space/Enter from clicking the button accidentally -->
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- Row 1: Esc, F1-F12, PrtScn, Insert, Delete -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Center">
+            <Border x:Name="Key_Escape" Width="45" Height="45"><TextBlock Text="Esc"/></Border>
+            <Border Width="15" Background="Transparent"/>
+            <Border x:Name="Key_F1" Width="45" Height="45"><TextBlock Text="F1"/></Border>
+            <Border x:Name="Key_F2" Width="45" Height="45"><TextBlock Text="F2"/></Border>
+            <Border x:Name="Key_F3" Width="45" Height="45"><TextBlock Text="F3"/></Border>
+            <Border x:Name="Key_F4" Width="45" Height="45"><TextBlock Text="F4"/></Border>
+            <Border Width="10" Background="Transparent"/>
+            <Border x:Name="Key_F5" Width="45" Height="45"><TextBlock Text="F5"/></Border>
+            <Border x:Name="Key_F6" Width="45" Height="45"><TextBlock Text="F6"/></Border>
+            <Border x:Name="Key_F7" Width="45" Height="45"><TextBlock Text="F7"/></Border>
+            <Border x:Name="Key_F8" Width="45" Height="45"><TextBlock Text="F8"/></Border>
+            <Border Width="10" Background="Transparent"/>
+            <Border x:Name="Key_F9" Width="45" Height="45"><TextBlock Text="F9"/></Border>
+            <Border x:Name="Key_F10" Width="45" Height="45"><TextBlock Text="F10"/></Border>
+            <Border x:Name="Key_F11" Width="45" Height="45"><TextBlock Text="F11"/></Border>
+            <Border x:Name="Key_F12" Width="45" Height="45"><TextBlock Text="F12"/></Border>
+            <Border Width="15" Background="Transparent"/>
+            <Border x:Name="Key_Snapshot" Width="55" Height="45"><TextBlock Text="PrtScn"/></Border>
+            <Border x:Name="Key_Insert" Width="55" Height="45"><TextBlock Text="Insert"/></Border>
+            <Border x:Name="Key_Delete" Width="55" Height="45"><TextBlock Text="Delete"/></Border>
+        </StackPanel>
+
+        <!-- Row 2: Numbers + Home/End -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,5,0,0">
+            <Border x:Name="Key_Oem3" Width="45" Height="45"><TextBlock Text="~"/></Border>
+            <Border x:Name="Key_D1" Width="45" Height="45"><TextBlock Text="1"/></Border>
+            <Border x:Name="Key_D2" Width="45" Height="45"><TextBlock Text="2"/></Border>
+            <Border x:Name="Key_D3" Width="45" Height="45"><TextBlock Text="3"/></Border>
+            <Border x:Name="Key_D4" Width="45" Height="45"><TextBlock Text="4"/></Border>
+            <Border x:Name="Key_D5" Width="45" Height="45"><TextBlock Text="5"/></Border>
+            <Border x:Name="Key_D6" Width="45" Height="45"><TextBlock Text="6"/></Border>
+            <Border x:Name="Key_D7" Width="45" Height="45"><TextBlock Text="7"/></Border>
+            <Border x:Name="Key_D8" Width="45" Height="45"><TextBlock Text="8"/></Border>
+            <Border x:Name="Key_D9" Width="45" Height="45"><TextBlock Text="9"/></Border>
+            <Border x:Name="Key_D0" Width="45" Height="45"><TextBlock Text="0"/></Border>
+            <Border x:Name="Key_OemMinus" Width="45" Height="45"><TextBlock Text="-"/></Border>
+            <Border x:Name="Key_OemPlus" Width="45" Height="45"><TextBlock Text="="/></Border>
+            <Border x:Name="Key_Back" Width="90" Height="45"><TextBlock Text="Back"/></Border>
+            <Border Width="15" Background="Transparent"/>
+            <Border x:Name="Key_Home" Width="55" Height="45"><TextBlock Text="Home"/></Border>
+            <Border x:Name="Key_End" Width="55" Height="45"><TextBlock Text="End"/></Border>
+        </StackPanel>
+
+        <!-- Row 3: QWERTY + PgUp/PgDn -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center">
+            <Border x:Name="Key_Tab" Width="70" Height="45"><TextBlock Text="Tab"/></Border>
+            <Border x:Name="Key_Q" Width="45" Height="45"><TextBlock Text="Q"/></Border>
+            <Border x:Name="Key_W" Width="45" Height="45"><TextBlock Text="W"/></Border>
+            <Border x:Name="Key_E" Width="45" Height="45"><TextBlock Text="E"/></Border>
+            <Border x:Name="Key_R" Width="45" Height="45"><TextBlock Text="R"/></Border>
+            <Border x:Name="Key_T" Width="45" Height="45"><TextBlock Text="T"/></Border>
+            <Border x:Name="Key_Y" Width="45" Height="45"><TextBlock Text="Y"/></Border>
+            <Border x:Name="Key_U" Width="45" Height="45"><TextBlock Text="U"/></Border>
+            <Border x:Name="Key_I" Width="45" Height="45"><TextBlock Text="I"/></Border>
+            <Border x:Name="Key_O" Width="45" Height="45"><TextBlock Text="O"/></Border>
+            <Border x:Name="Key_P" Width="45" Height="45"><TextBlock Text="P"/></Border>
+            <Border x:Name="Key_OemOpenBrackets" Width="45" Height="45"><TextBlock Text="["/></Border>
+            <Border x:Name="Key_OemCloseBrackets" Width="45" Height="45"><TextBlock Text="]"/></Border>
+            <Border x:Name="Key_Oem5" Width="70" Height="45"><TextBlock Text="\"/></Border>
+            <Border Width="15" Background="Transparent"/>
+            <Border x:Name="Key_PageUp" Width="55" Height="45"><TextBlock Text="PgUp"/></Border>
+            <Border x:Name="Key_PageDown" Width="55" Height="45"><TextBlock Text="PgDn"/></Border>
+        </StackPanel>
+
+        <!-- Row 4: ASDF -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Center">
+            <Border x:Name="Key_Capital" Width="80" Height="45"><TextBlock Text="Caps"/></Border>
+            <Border x:Name="Key_A" Width="45" Height="45"><TextBlock Text="A"/></Border>
+            <Border x:Name="Key_S" Width="45" Height="45"><TextBlock Text="S"/></Border>
+            <Border x:Name="Key_D" Width="45" Height="45"><TextBlock Text="D"/></Border>
+            <Border x:Name="Key_F" Width="45" Height="45"><TextBlock Text="F"/></Border>
+            <Border x:Name="Key_G" Width="45" Height="45"><TextBlock Text="G"/></Border>
+            <Border x:Name="Key_H" Width="45" Height="45"><TextBlock Text="H"/></Border>
+            <Border x:Name="Key_J" Width="45" Height="45"><TextBlock Text="J"/></Border>
+            <Border x:Name="Key_K" Width="45" Height="45"><TextBlock Text="K"/></Border>
+            <Border x:Name="Key_L" Width="45" Height="45"><TextBlock Text="L"/></Border>
+            <Border x:Name="Key_Oem1" Width="45" Height="45"><TextBlock Text=";"/></Border>
+            <Border x:Name="Key_OemQuotes" Width="45" Height="45"><TextBlock Text="'"/></Border>
+            <Border x:Name="Key_Return" Width="105" Height="45"><TextBlock Text="Enter"/></Border>
+            <Border Width="125" Background="Transparent"/>
+        </StackPanel>
+
+        <!-- Row 5: ZXCV -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Center">
+            <Border x:Name="Key_LeftShift" Width="105" Height="45"><TextBlock Text="L Shift"/></Border>
+            <Border x:Name="Key_Z" Width="45" Height="45"><TextBlock Text="Z"/></Border>
+            <Border x:Name="Key_X" Width="45" Height="45"><TextBlock Text="X"/></Border>
+            <Border x:Name="Key_C" Width="45" Height="45"><TextBlock Text="C"/></Border>
+            <Border x:Name="Key_V" Width="45" Height="45"><TextBlock Text="V"/></Border>
+            <Border x:Name="Key_B" Width="45" Height="45"><TextBlock Text="B"/></Border>
+            <Border x:Name="Key_N" Width="45" Height="45"><TextBlock Text="N"/></Border>
+            <Border x:Name="Key_M" Width="45" Height="45"><TextBlock Text="M"/></Border>
+            <Border x:Name="Key_OemComma" Width="45" Height="45"><TextBlock Text=","/></Border>
+            <Border x:Name="Key_OemPeriod" Width="45" Height="45"><TextBlock Text="."/></Border>
+            <Border x:Name="Key_OemQuestion" Width="45" Height="45"><TextBlock Text="/"/></Border>
+            <Border x:Name="Key_RightShift" Width="105" Height="45"><TextBlock Text="R Shift"/></Border>
+            <Border Width="125" Background="Transparent"/>
+        </StackPanel>
+
+        <!-- Row 6: Space -->
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Center">
+            <Border x:Name="Key_LeftCtrl" Width="55" Height="45"><TextBlock Text="Ctrl"/></Border>
+            <Border x:Name="Key_LWin" Width="55" Height="45"><TextBlock Text="Win"/></Border>
+            <Border x:Name="Key_LeftAlt" Width="55" Height="45"><TextBlock Text="Alt"/></Border>
+            <Border x:Name="Key_Space" Width="260" Height="45"><TextBlock Text="Space"/></Border>
+            <Border x:Name="Key_RightAlt" Width="55" Height="45"><TextBlock Text="Alt"/></Border>
+            <Border x:Name="Key_Apps" Width="55" Height="45"><TextBlock Text="Menu"/></Border>
+            <Border x:Name="Key_RightCtrl" Width="55" Height="45"><TextBlock Text="Ctrl"/></Border>
+            
+            <Border Width="25" Background="Transparent"/>
+            <Border x:Name="Key_Left" Width="45" Height="45"><TextBlock Text="Left"/></Border>
+            <StackPanel>
+                <Border x:Name="Key_Up" Width="45" Height="21" Margin="2,2,2,0"><TextBlock Text="Up" FontSize="10"/></Border>
+                <Border x:Name="Key_Down" Width="45" Height="22" Margin="2,0,2,2"><TextBlock Text="Down" FontSize="10"/></Border>
+            </StackPanel>
+            <Border x:Name="Key_Right" Width="45" Height="45"><TextBlock Text="Right"/></Border>
+            <Border Width="20" Background="Transparent"/>
+        </StackPanel>
+
+        <!-- Media keys (Volume/Brightness are usually hardware or standard media keys) -->
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
+            <Border x:Name="Key_VolumeMute" Width="55" Height="30"><TextBlock Text="Mute"/></Border>
+            <Border x:Name="Key_VolumeDown" Width="55" Height="30"><TextBlock Text="Vol -"/></Border>
+            <Border x:Name="Key_VolumeUp" Width="55" Height="30"><TextBlock Text="Vol +"/></Border>
+            <Border x:Name="Key_MediaPlayPause" Width="55" Height="30"><TextBlock Text="Play"/></Border>
+            <TextBlock Text="(Media/Volume keys may not register if intercepted by OS)" Foreground="#7F8C8D" Margin="10,0,0,0" VerticalAlignment="Center" FontStyle="Italic"/>
+        </StackPanel>
+
+        <!-- Instructions & Close Buttons -->
+        <StackPanel Grid.Row="8" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,20">
+            <Button x:Name="BtnFail" Content="Fail (Broken Keys)" Width="180" Height="45" Background="#E74C3C" Foreground="White" Margin="0,0,20,0"/>
+            <Button x:Name="BtnPass" Content="Pass (All Work)" Width="180" Height="45" Background="#2ECC71" Foreground="White" Margin="0,0,20,0"/>
+            <Button x:Name="BtnClose" Content="Close (Cancel)" Width="180" Height="45" Background="#95A5A6" Foreground="White"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+    $reader = [System.Xml.XmlNodeReader]::new([xml]$kbdXaml)
+    $kbdWindow = [Windows.Markup.XamlReader]::Load($reader)
+
+    $global:kbdResult = $null
+
+    $kbdWindow.FindName("BtnPass").Add_Click({
+            $global:kbdResult = "Operational"
+            $kbdWindow.Close()
+        })
+
+    $kbdWindow.FindName("BtnFail").Add_Click({
+            $global:kbdResult = "Defective"
+            $kbdWindow.Close()
+        })
+    
+    $kbdWindow.FindName("BtnClose").Add_Click({
+            $global:kbdResult = $null
+            $kbdWindow.Close()
+        })
+
+    $bgBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFrom("#2ECC71")
+
+    $kbdWindow.Add_PreviewKeyDown({
+            param($src, $e)
+        
+            $keyStr = $e.Key.ToString()
+            if ($keyStr -eq "System") {
+                $keyStr = $e.SystemKey.ToString()
+            }
+
+            $borderName = "Key_$keyStr"
+            $border = $kbdWindow.FindName($borderName)
+        
+            if (-not $border) {
+                # Handle duplicate WPF Key enum names (like Oem6 vs OemCloseBrackets)
+                switch ($keyStr) {
+                    "Oem6" { $border = $kbdWindow.FindName("Key_OemCloseBrackets") }
+                    "OemCloseBrackets" { $border = $kbdWindow.FindName("Key_Oem6") }
+                    "Oem4" { $border = $kbdWindow.FindName("Key_OemOpenBrackets") }
+                    "OemOpenBrackets" { $border = $kbdWindow.FindName("Key_Oem4") }
+                    "OemPipe" { $border = $kbdWindow.FindName("Key_Oem5") }
+                    "Oem5" { $border = $kbdWindow.FindName("Key_OemPipe") }
+                    "OemSemicolon" { $border = $kbdWindow.FindName("Key_Oem1") }
+                    "Oem1" { $border = $kbdWindow.FindName("Key_OemSemicolon") }
+                    "Oem7" { $border = $kbdWindow.FindName("Key_OemQuotes") }
+                    "OemQuotes" { $border = $kbdWindow.FindName("Key_Oem7") }
+                    "Oem2" { $border = $kbdWindow.FindName("Key_OemQuestion") }
+                    "OemQuestion" { $border = $kbdWindow.FindName("Key_Oem2") }
+                    "OemTilde" { $border = $kbdWindow.FindName("Key_Oem3") }
+                    "Oem3" { $border = $kbdWindow.FindName("Key_OemTilde") }
+                    "Prior" { $border = $kbdWindow.FindName("Key_PageUp") }
+                    "PageUp" { $border = $kbdWindow.FindName("Key_Prior") }
+                    "Next" { $border = $kbdWindow.FindName("Key_PageDown") }
+                    "PageDown" { $border = $kbdWindow.FindName("Key_Next") }
+                    "PrintScreen" { $border = $kbdWindow.FindName("Key_Snapshot") }
+                    "Snapshot" { $border = $kbdWindow.FindName("Key_PrintScreen") }
+                    "Return" { $border = $kbdWindow.FindName("Key_Enter") }
+                    "Enter" { $border = $kbdWindow.FindName("Key_Return") }
+                }
+            }
+        
+            if ($border) {
+                $border.Background = $bgBrush
+            }
+
+            # Prevent Enter, Space, Escape and System keys from doing their default behavior (like closing the window or clicking buttons)
+            $e.Handled = $true
+        })
+
+    $kbdWindow.Add_PreviewKeyUp({
+            param($src, $e)
+            $e.Handled = $true
+        })
+
+    # Ensure window has focus initially
+    $kbdWindow.Add_Loaded({
+            $kbdWindow.Focus()
+        })
+
+    $kbdWindow.ShowDialog() | Out-Null
+    return $global:kbdResult
 }
 
 # ------------------------------------------------------------
@@ -288,6 +576,37 @@ function Show-DeleteEmailDialog {
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Padding" Value="5"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="4" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.7"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="border" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="StatCardStyle" TargetType="Border">
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Margin" Value="6"/>
+            <Setter Property="Padding" Value="15"/>
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect Color="Black" Direction="270" ShadowDepth="2" BlurRadius="5" Opacity="0.15"/>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
 
@@ -301,7 +620,7 @@ function Show-DeleteEmailDialog {
             </StackPanel>
         </Border>
 
-        <TabControl Grid.Row="1" Margin="10" Background="White">
+        <TabControl x:Name="MainTabControl" Grid.Row="1" Margin="10" Background="White">
             
             <TabItem Header=" New Inspection (Automated) " FontSize="14" FontWeight="SemiBold">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -408,10 +727,10 @@ function Show-DeleteEmailDialog {
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <Grid Grid.Row="0" Margin="0,0,0,15">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Border Grid.Column="0" Background="#002D62" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatTotal" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Total Runs" Foreground="#FFC72C"/></StackPanel></Border>
-                        <Border Grid.Column="1" Background="#28A745" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatPassed" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Passed" Foreground="White"/></StackPanel></Border>
-                        <Border Grid.Column="2" Background="#DC3545" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatFailed" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Failed" Foreground="White"/></StackPanel></Border>
-                        <Border Grid.Column="3" Background="#002D62" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatAvg" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Avg Duration (min)" Foreground="#FFC72C"/></StackPanel></Border>
+                        <Border Grid.Column="0" Background="#002D62" Style="{StaticResource StatCardStyle}"><StackPanel><TextBlock x:Name="StatTotal" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Total Runs" Foreground="#FFC72C"/></StackPanel></Border>
+                        <Border Grid.Column="1" Background="#28A745" Style="{StaticResource StatCardStyle}"><StackPanel><TextBlock x:Name="StatPassed" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Passed" Foreground="White"/></StackPanel></Border>
+                        <Border Grid.Column="2" Background="#DC3545" Style="{StaticResource StatCardStyle}"><StackPanel><TextBlock x:Name="StatFailed" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Failed" Foreground="White"/></StackPanel></Border>
+                        <Border Grid.Column="3" Background="#002D62" Style="{StaticResource StatCardStyle}"><StackPanel><TextBlock x:Name="StatAvg" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Avg Duration (min)" Foreground="#FFC72C"/></StackPanel></Border>
                     </Grid>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="5,0,0,10">
                         <Grid Width="130" Height="30" Margin="0,0,10,0">
@@ -423,6 +742,7 @@ function Show-DeleteEmailDialog {
                         </ComboBox>
                         <Button x:Name="RefreshBtn" Content="Refresh Page" Width="100" Height="30" Margin="0,0,10,0"/>
                         <Button x:Name="ExportBtn" Content="Export to CSV" Width="110" Height="30" Margin="0,0,10,0"/>
+                        <Button x:Name="EditBtn" Content="Edit Selected" Width="100" Height="30" Background="#17A2B8" Foreground="White" Margin="0,0,10,0"/>
                         <Button x:Name="DeleteRowBtn" Content="Delete Selected" Width="110" Height="30" Background="#FD7E14" Foreground="White" Margin="0,0,10,0"/>
                         <Button x:Name="DeleteDbBtn" Content="Clear All" Width="90" Height="30" Background="#DC3545" Foreground="White" Margin="0,0,10,0"/>
                         <Button x:Name="DeleteEmailBtn" Content="Delete Email" Width="100" Height="30" Background="#6C757D" Foreground="White" FontWeight="Bold" BorderThickness="0"/>
@@ -646,12 +966,9 @@ $window.FindName("BtnTestCamera").Add_Click({
     })
 
 $window.FindName("BtnTestKeys").Add_Click({ 
-        Start-Process "https://keyboardchecker.com/" 
-        Start-Sleep -Seconds 1
-        $window.Activate()
-        $res = [System.Windows.MessageBox]::Show("Did all the keys on the keyboard work properly?", "Keyboard Test", "YesNo", "Question")
-        if ($res -eq "Yes") { $window.FindName("cbKeyboard").SelectedItem = "Operational" }
-        elseif ($res -eq "No") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
+        $res = Show-KeyboardTester
+        if ($res -eq "Operational") { $window.FindName("cbKeyboard").SelectedItem = "Operational" }
+        elseif ($res -eq "Defective") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
     })
 
 # ------------------------------------------------------------
@@ -757,8 +1074,13 @@ $window.FindName("BtnAutoFill").Add_Click({
 $window.FindName("SaveInspectionBtn").Add_Click({
     
         $durationSpan = (Get-Date) - $Global:sessionStartTime
-        $calcDuration = [math]::Round($durationSpan.TotalHours, 4)
+        $calcDuration = [math]::Round($durationSpan.TotalHours, 2)
         if ($calcDuration -le 0) { $calcDuration = 0.01 }
+
+        $finalDuration = $calcDuration
+        if ($null -ne $Global:EditingRecord -and $Global:EditingRecord.DurationHours) {
+            $finalDuration = [math]::Round(([double]$Global:EditingRecord.DurationHours + $calcDuration), 2)
+        }
 
         $rawEmail = $techEmailInput.Text.Trim()
         if ($rawEmail -match "(?i)^sandeep") { $rawEmail = "Sandeep.Pokharel@trojans.dsu.edu" }
@@ -777,7 +1099,12 @@ $window.FindName("SaveInspectionBtn").Add_Click({
         if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
             $existingSerials = @($Global:DatabaseCSV | ConvertFrom-Csv | Select-Object -ExpandProperty SerialNumber -ErrorAction SilentlyContinue)
         }
-        if ($savedSerial -in $existingSerials) {
+        $isDuplicate = ($savedSerial -in $existingSerials)
+        if ($null -ne $Global:EditingRecord -and $Global:EditingRecord.SerialNumber -eq $savedSerial) {
+            $isDuplicate = $false
+        }
+
+        if ($isDuplicate) {
             $dupConfirm = [System.Windows.MessageBox]::Show(
                 "Serial number '$savedSerial' already exists in the database.`n`nDo you still want to save this inspection?",
                 "Duplicate Serial Number", "YesNo", "Warning"
@@ -786,7 +1113,7 @@ $window.FindName("SaveInspectionBtn").Add_Click({
         }
 
         $R = [ordered]@{
-            TechnicianEmail = $rawEmail; SerialNumber = $savedSerial; Duration = $calcDuration
+            TechnicianEmail = $rawEmail; SerialNumber = $savedSerial; DurationHours = $finalDuration
             Charging = $window.FindName("cbCharging").Text; Screen = $window.FindName("cbScreen").Text
             Touchscreen = $window.FindName("cbTouch").Text; NetworkAdapters = $window.FindName("cbNetwork").Text
             Keyboard = $window.FindName("cbKeyboard").Text; MouseTrackpad = $window.FindName("cbMouse").Text
@@ -810,7 +1137,37 @@ $window.FindName("SaveInspectionBtn").Add_Click({
         }
 
         $csvLine = ConvertTo-Csv -InputObject ([PSCustomObject]$R) -NoTypeInformation | Select-Object -Last 1
-        $Global:DatabaseCSV += "`r`n" + $csvLine
+        
+        if ($null -ne $Global:EditingRecord) {
+            $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
+            $matchIndex = -1
+            for ($i = 0; $i -lt $allData.Count; $i++) {
+                if ($allData[$i].SerialNumber -eq $Global:EditingRecord.SerialNumber -and $allData[$i].DurationHours -eq $Global:EditingRecord.DurationHours) {
+                    $matchIndex = $i
+                    break
+                }
+            }
+            if ($matchIndex -ge 0) {
+                $allData[$matchIndex] = [PSCustomObject]$R
+                $csvHeader = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
+                if ($allData.Count -gt 0) {
+                    $newCsvData = ($allData | Select-Object -Property TechnicianEmail, SerialNumber, DurationHours, Charging, Screen, Touchscreen, NetworkAdapters, Keyboard, MouseTrackpad, VideoPorts, AudioOutput, Microphone, Camera, USBPorts, PalmRest, Backplate, BaseAndVents, Hinge, Notes, FinalStatus | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
+                    $Global:DatabaseCSV = $csvHeader + "`r`n" + $newCsvData
+                }
+                else {
+                    $Global:DatabaseCSV = $csvHeader + "`r`n" + $csvLine
+                }
+            }
+            else {
+                $Global:DatabaseCSV += "`r`n" + $csvLine
+            }
+            
+            $Global:EditingRecord = $null
+            $saveInspectionBtn.Content = "SAVE INSPECTION"
+        }
+        else {
+            $Global:DatabaseCSV += "`r`n" + $csvLine
+        }
     
         Update-ScriptData
 
@@ -874,6 +1231,8 @@ $window.FindName("ResetFormBtn").Add_Click({
         }
         $serialInput.Text = ""
         $notesInput.Text = ""
+        $Global:EditingRecord = $null
+        $saveInspectionBtn.Content = "SAVE INSPECTION"
         $audioStatusLabel.Text = " "
         $audioStatusLabel.Background = "Transparent"
         $techEmailInput.Text = ""
@@ -925,6 +1284,45 @@ $window.FindName("ExportBtn").Add_Click({
     })
 
 # ------------------------------------------------------------
+# EDIT SELECTED ROW
+# ------------------------------------------------------------
+$window.FindName("EditBtn").Add_Click({
+        $selectedItem = $resultsGrid.SelectedItem
+        if ($null -eq $selectedItem) {
+            [System.Windows.MessageBox]::Show("Please select a laptop record from the dashboard to edit.", "No Selection", "OK", "Warning")
+            return
+        }
+
+        $Global:EditingRecord = $selectedItem
+    
+        $techEmailInput.Text = $selectedItem.TechnicianEmail
+        $serialInput.Text = $selectedItem.SerialNumber
+    
+        $window.FindName("cbCharging").SelectedItem = $selectedItem.Charging
+        $window.FindName("cbScreen").SelectedItem = $selectedItem.Screen
+        $window.FindName("cbTouch").SelectedItem = $selectedItem.Touchscreen
+        $window.FindName("cbNetwork").SelectedItem = $selectedItem.NetworkAdapters
+        $window.FindName("cbKeyboard").SelectedItem = $selectedItem.Keyboard
+        $window.FindName("cbMouse").SelectedItem = $selectedItem.MouseTrackpad
+        $window.FindName("cbVideo").SelectedItem = $selectedItem.VideoPorts
+        $window.FindName("cbAudio").SelectedItem = $selectedItem.AudioOutput
+        $window.FindName("cbMic").SelectedItem = $selectedItem.Microphone
+        $window.FindName("cbCamera").SelectedItem = $selectedItem.Camera
+        $window.FindName("cbUSB").SelectedItem = $selectedItem.USBPorts
+    
+        $window.FindName("cbPalm").SelectedItem = $selectedItem.PalmRest
+        $window.FindName("cbBackplate").SelectedItem = $selectedItem.Backplate
+        $window.FindName("cbBase").SelectedItem = $selectedItem.BaseAndVents
+        $window.FindName("cbHinge").SelectedItem = $selectedItem.Hinge
+    
+        $notesInput.Text = $selectedItem.Notes
+    
+        $saveInspectionBtn.Content = "UPDATE INSPECTION"
+        $window.FindName("MainTabControl").SelectedIndex = 0
+        Test-FormCompletion
+    })
+
+# ------------------------------------------------------------
 # DELETE SELECTED ROW (Requires PIN: 5555)
 # ------------------------------------------------------------
 $window.FindName("DeleteRowBtn").Add_Click({
@@ -937,7 +1335,7 @@ $window.FindName("DeleteRowBtn").Add_Click({
 
         $enteredPin = Get-PinInput
     
-        if ($enteredPin -eq "5555") {
+        if ($enteredPin -eq $Global:AdminPin) {
             $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
             $matchIndex = -1
         
@@ -980,7 +1378,7 @@ $window.FindName("DeleteRowBtn").Add_Click({
 $window.FindName("DeleteDbBtn").Add_Click({
         $enteredPin = Get-PinInput
     
-        if ($enteredPin -eq "5555") {
+        if ($enteredPin -eq $Global:AdminPin) {
             $Global:DatabaseCSV = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
             Update-ScriptData
             Update-Dashboard
