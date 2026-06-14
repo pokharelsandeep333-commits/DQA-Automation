@@ -5,7 +5,7 @@
 # ============================================================
 
 # --- DATA STORAGE BEGINS HERE ---
-$Global:SavedEmails = @("")
+$Global:SavedEmails = @("Technician@exxample.com")
 $Global:DatabaseCSV = @"
 TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus
 "@
@@ -255,6 +255,33 @@ function Show-DeleteEmailDialog {
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="DSU IT Support - Automated DQA System" Height="780" Width="1100" WindowStartupLocation="CenterScreen" Background="#F4F6F9" FontFamily="Segoe UI">
     <Window.Resources>
+        <DataTemplate x:Key="ColoredComboBoxTemplate">
+            <Border x:Name="bd" Padding="5,0" CornerRadius="2" HorizontalAlignment="Stretch" MinHeight="22">
+                <TextBlock x:Name="txt" Text="{Binding}" VerticalAlignment="Center" Foreground="Black"/>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding}" Value="Defective">
+                    <Setter TargetName="bd" Property="Background" Value="#F8D7DA"/>
+                    <Setter TargetName="txt" Property="FontWeight" Value="Bold"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding}" Value="Needs Repair">
+                    <Setter TargetName="bd" Property="Background" Value="#F8D7DA"/>
+                    <Setter TargetName="txt" Property="FontWeight" Value="Bold"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding}" Value="Operational">
+                    <Setter TargetName="bd" Property="Background" Value="#D4EDDA"/>
+                    <Setter TargetName="txt" Property="FontWeight" Value="SemiBold"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding}" Value="Acceptable">
+                    <Setter TargetName="bd" Property="Background" Value="#D4EDDA"/>
+                    <Setter TargetName="txt" Property="FontWeight" Value="SemiBold"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+        <Style TargetType="ComboBox">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="ItemTemplate" Value="{StaticResource ColoredComboBoxTemplate}"/>
+        </Style>
         <Style TargetType="Button">
             <Setter Property="Background" Value="#FFC72C"/>
             <Setter Property="Foreground" Value="#002D62"/>
@@ -332,7 +359,7 @@ function Show-DeleteEmailDialog {
                                     <ComboBox x:Name="cbKeyboard" Grid.Column="2" Grid.Row="2" Height="26" Margin="5,0,0,0" VerticalAlignment="Top"/>
                                 </Grid>
                                 
-                                <TextBlock x:Name="AudioStatusLabel" Text=" " FontWeight="Bold" Margin="0,0,0,10" Height="20"/>
+                                <TextBlock x:Name="AudioStatusLabel" Text=" " FontWeight="Bold" Margin="0,0,0,10" Height="22" Padding="5,0,5,0" VerticalAlignment="Center"/>
 
                                 <TextBlock Text="Other Hardware:" FontWeight="SemiBold" Foreground="#888" Margin="0,5,0,5"/>
                                 <Grid>
@@ -382,8 +409,8 @@ function Show-DeleteEmailDialog {
                     <Grid Grid.Row="0" Margin="0,0,0,15">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <Border Grid.Column="0" Background="#002D62" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatTotal" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Total Runs" Foreground="#FFC72C"/></StackPanel></Border>
-                        <Border Grid.Column="1" Background="#002D62" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatPassed" FontSize="28" FontWeight="Bold" Foreground="#28A745"/><TextBlock Text="Passed" Foreground="#FFC72C"/></StackPanel></Border>
-                        <Border Grid.Column="2" Background="#002D62" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatFailed" FontSize="28" FontWeight="Bold" Foreground="#DC3545"/><TextBlock Text="Failed" Foreground="#FFC72C"/></StackPanel></Border>
+                        <Border Grid.Column="1" Background="#28A745" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatPassed" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Passed" Foreground="White"/></StackPanel></Border>
+                        <Border Grid.Column="2" Background="#DC3545" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatFailed" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Failed" Foreground="White"/></StackPanel></Border>
                         <Border Grid.Column="3" Background="#002D62" CornerRadius="5" Margin="5" Padding="15"><StackPanel><TextBlock x:Name="StatAvg" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Avg Duration (min)" Foreground="#FFC72C"/></StackPanel></Border>
                     </Grid>
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="5,0,0,10">
@@ -444,6 +471,19 @@ $techEmailInput.ItemsSource = $Global:SavedEmails
 $hwOptions = @("", "Operational", "Defective", "Not Applicable")
 $cosmeticOptions = @("", "Acceptable", "Needs Repair", "Not Applicable")
 
+# Set Tab Order for Smooth Keyboard Navigation
+$tabOrder = @("TechEmailInput", "SerialInput", "cbCharging", "cbNetwork", "BtnTestCamera", "BtnTestAudio", "BtnTestKeys", "cbCamera", "cbAudio", "cbMic", "cbKeyboard", "cbMouse", "cbUSB", "cbScreen", "cbTouch", "cbVideo", "cbPalm", "cbBackplate", "cbBase", "cbHinge", "NotesInput", "SaveInspectionBtn")
+for ($i = 0; $i -lt $tabOrder.Count; $i++) {
+    $ctrl = $window.FindName($tabOrder[$i])
+    if ($ctrl) { $ctrl.TabIndex = ($i + 1) }
+}
+
+$bc = New-Object System.Windows.Media.BrushConverter
+$Global:redBgBrush = $bc.ConvertFrom("#F8D7DA")
+$Global:greenBgBrush = $bc.ConvertFrom("#D4EDDA")
+$Global:whiteBgBrush = $bc.ConvertFrom("#FFFFFF")
+$Global:blackTextBrush = $bc.ConvertFrom("#000000")
+
 $hwBoxes = @("cbCharging", "cbScreen", "cbTouch", "cbNetwork", "cbKeyboard", "cbMouse", "cbVideo", "cbAudio", "cbMic", "cbCamera", "cbUSB")
 foreach ($box in $hwBoxes) { $window.FindName($box).ItemsSource = $hwOptions; $window.FindName($box).SelectedIndex = 0 }
 
@@ -481,8 +521,16 @@ function Test-FormCompletion {
 
 $techEmailInput.Add_KeyUp({ Test-FormCompletion })
 $serialInput.Add_TextChanged({ Test-FormCompletion })
-foreach ($box in $hwBoxes) { $window.FindName($box).Add_SelectionChanged({ Test-FormCompletion }) }
-foreach ($box in $cosmeticBoxes) { $window.FindName($box).Add_SelectionChanged({ Test-FormCompletion }) }
+foreach ($box in $hwBoxes) { 
+    $window.FindName($box).Add_SelectionChanged({ 
+            Test-FormCompletion
+        }) 
+}
+foreach ($box in $cosmeticBoxes) { 
+    $window.FindName($box).Add_SelectionChanged({ 
+            Test-FormCompletion
+        }) 
+}
 
 
 # ------------------------------------------------------------
@@ -563,10 +611,10 @@ function Start-AutoDetect {
     if ([string]::IsNullOrWhiteSpace($techEmailInput.Text)) { return }
     if ($serialInput.Text -ne "" -and $serialInput.Text -ne "UNKNOWN") { return }
 
-    try { $serialInput.Text = (Get-WmiObject Win32_BIOS).SerialNumber.Trim() } catch { $serialInput.Text = "UNKNOWN" }
+    try { $serialInput.Text = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber.Trim() } catch { $serialInput.Text = "UNKNOWN" }
     
     try {
-        $battery = Get-WmiObject -Class Win32_Battery -ErrorAction Stop
+        $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction Stop
         if ($battery -and $battery.BatteryStatus -in 2, 3) { $window.FindName("cbCharging").SelectedItem = "Operational" }
         else { $window.FindName("cbCharging").SelectedItem = "Defective" }
     }
@@ -590,6 +638,8 @@ $techEmailInput.Add_SelectionChanged({ Start-AutoDetect })
 # ------------------------------------------------------------
 $window.FindName("BtnTestCamera").Add_Click({ 
         Start-Process "microsoft.windows.camera:" 
+        Start-Sleep -Seconds 1
+        $window.Activate()
         $res = [System.Windows.MessageBox]::Show("Did the camera work properly?", "Camera Test", "YesNo", "Question")
         if ($res -eq "Yes") { $window.FindName("cbCamera").SelectedItem = "Operational" }
         elseif ($res -eq "No") { $window.FindName("cbCamera").SelectedItem = "Defective" }
@@ -597,6 +647,8 @@ $window.FindName("BtnTestCamera").Add_Click({
 
 $window.FindName("BtnTestKeys").Add_Click({ 
         Start-Process "https://keyboardchecker.com/" 
+        Start-Sleep -Seconds 1
+        $window.Activate()
         $res = [System.Windows.MessageBox]::Show("Did all the keys on the keyboard work properly?", "Keyboard Test", "YesNo", "Question")
         if ($res -eq "Yes") { $window.FindName("cbKeyboard").SelectedItem = "Operational" }
         elseif ($res -eq "No") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
@@ -620,8 +672,9 @@ $Global:audioTimer.Add_Tick({
             [AudioHelper]::mciSendString($saveCmd, [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
             [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
 
-            $audioStatusLabel.Text = "[PLAYING] Audio playing back... Listen to your speakers."
-            $audioStatusLabel.Foreground = "#002D62"
+            $audioStatusLabel.Text = " [PLAYING] Audio playing back... Listen to your speakers. "
+            $audioStatusLabel.Background = "#002D62"
+            $audioStatusLabel.Foreground = "White"
 
             if (Test-Path $Global:tempAudioPath) {
                 $Global:soundPlayer.SoundLocation = $Global:tempAudioPath
@@ -633,10 +686,12 @@ $Global:audioTimer.Add_Tick({
         
         }
         elseif ($Global:audioState -eq 2) {
-            $audioStatusLabel.Text = "[DONE] Audio test complete."
-            $audioStatusLabel.Foreground = "#28A745"
+            $audioStatusLabel.Text = " [DONE] Audio test complete. "
+            $audioStatusLabel.Background = "#28A745"
+            $audioStatusLabel.Foreground = "White"
             Remove-Item $Global:tempAudioPath -Force -ErrorAction SilentlyContinue
         
+            $window.Activate()
             $resAudio = [System.Windows.MessageBox]::Show("Did you hear the audio playing from speakers or not?", "Speaker Test", "YesNo", "Question")
             if ($resAudio -eq "Yes") { 
                 $window.FindName("cbAudio").SelectedItem = "Operational"
@@ -652,6 +707,7 @@ $Global:audioTimer.Add_Tick({
             elseif ($resMic -eq "No") { 
                 $window.FindName("cbMic").SelectedItem = "Defective"
             }
+            $window.FindName("BtnTestAudio").IsEnabled = $true
         }
     })
 
@@ -660,8 +716,10 @@ $window.FindName("BtnTestAudio").Add_Click({
         # Automatically force unmute and set system volume to exactly 50% using Core Audio API
         [AudioHelper]::SetVolume(50)
 
-        $audioStatusLabel.Text = "[RECORDING] 5s... SPEAK or CLAP now!"
-        $audioStatusLabel.Foreground = "#DC3545"
+        $window.FindName("BtnTestAudio").IsEnabled = $false
+        $audioStatusLabel.Text = " [RECORDING] 5s... SPEAK or CLAP now! "
+        $audioStatusLabel.Background = "#DC3545"
+        $audioStatusLabel.Foreground = "White"
     
         [AudioHelper]::mciSendString("open new type waveaudio alias recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
         [AudioHelper]::mciSendString("record recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
@@ -760,7 +818,7 @@ $window.FindName("SaveInspectionBtn").Add_Click({
     
         $lastSavedLabel.Text = "Last saved: $savedSerial at $((Get-Date).ToString('hh:mm tt'))"
 
-        $serialInput.Text = ""; $notesInput.Text = ""; $audioStatusLabel.Text = " "
+        $serialInput.Text = ""; $notesInput.Text = ""; $audioStatusLabel.Text = " "; $audioStatusLabel.Background = "Transparent"
         $Global:sessionStartTime = Get-Date 
     
         foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
@@ -810,9 +868,14 @@ $window.FindName("RefreshBtn").Add_Click({ Update-Dashboard })
 # RESET / CLEAR FORM BUTTON
 # ------------------------------------------------------------
 $window.FindName("ResetFormBtn").Add_Click({
+        if ($serialInput.Text -ne "" -or $notesInput.Text -ne "") {
+            $res = [System.Windows.MessageBox]::Show("Are you sure you want to clear all entered data?", "Confirm Reset", "YesNo", "Warning")
+            if ($res -ne "Yes") { return }
+        }
         $serialInput.Text = ""
         $notesInput.Text = ""
         $audioStatusLabel.Text = " "
+        $audioStatusLabel.Background = "Transparent"
         $techEmailInput.Text = ""
         $lastSavedLabel.Text = " "
         $Global:sessionStartTime = Get-Date
@@ -851,13 +914,14 @@ $window.FindName("ExportBtn").Add_Click({
             return
         }
     
-        $usbCheck = (Get-WmiObject Win32_LogicalDisk | Where-Object { $_.DriveType -eq 2 } | Select-Object -First 1).DeviceID
+        $usbCheck = (Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -eq 2 } | Select-Object -First 1).DeviceID
         $exportDir = if ($usbCheck) { $usbCheck } else { "$env:USERPROFILE\Desktop" }
     
         $savePath = "$exportDir\DQA_Output_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"
     
         $exportData | Select-Object * -ExcludeProperty Id, RunDate, "start date", Status | Export-Csv -Path $savePath -NoTypeInformation -Force
         [System.Windows.MessageBox]::Show("Output successfully exported to:`n$savePath", "Export Complete", "OK", "Information")
+        Invoke-Item $exportDir
     })
 
 # ------------------------------------------------------------
@@ -928,4 +992,8 @@ $window.FindName("DeleteDbBtn").Add_Click({
     })
 
 Update-Dashboard
+[System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
+    [Action] { $techEmailInput.Focus() | Out-Null },
+    [System.Windows.Threading.DispatcherPriority]::Background
+) | Out-Null
 $window.ShowDialog() | Out-Null
