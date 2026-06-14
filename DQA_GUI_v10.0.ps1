@@ -115,8 +115,8 @@ function Update-ScriptData {
         if ($line -match "^# --- DATA STORAGE BEGINS HERE ---") {
             $newLines += $line
             $cleanEmails = @($Global:SavedEmails | Select-Object -Unique | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-            $emailItems  = ($cleanEmails | ForEach-Object { '"' + $_ + '"' }) -join ", "
-            $newLines   += ('$Global:SavedEmails = @(' + $emailItems + ')')
+            $emailItems = ($cleanEmails | ForEach-Object { '"' + $_ + '"' }) -join ", "
+            $newLines += ('$Global:SavedEmails = @(' + $emailItems + ')')
             
             $newLines += "`$Global:DatabaseCSV = @`""
             $newLines += $Global:DatabaseCSV.Trim()
@@ -140,7 +140,7 @@ function Update-ScriptData {
 function Get-PinInput {
     $pinForm = New-Object System.Windows.Forms.Form
     $pinForm.Text = "Security Verification"
-    $pinForm.Size = New-Object System.Drawing.Size(280,140)
+    $pinForm.Size = New-Object System.Drawing.Size(280, 140)
     $pinForm.StartPosition = "CenterScreen"
     $pinForm.FormBorderStyle = "FixedDialog"
     $pinForm.MaximizeBox = $false
@@ -148,25 +148,25 @@ function Get-PinInput {
     $pinForm.TopMost = $true
 
     $label = New-Object System.Windows.Forms.Label
-    $label.Location = New-Object System.Drawing.Point(10,15)
-    $label.Size = New-Object System.Drawing.Size(240,20)
+    $label.Location = New-Object System.Drawing.Point(10, 15)
+    $label.Size = New-Object System.Drawing.Size(240, 20)
     $label.Text = "Enter 4-digit PIN to authorize:"
 
     $textBox = New-Object System.Windows.Forms.TextBox
-    $textBox.Location = New-Object System.Drawing.Point(10,40)
-    $textBox.Size = New-Object System.Drawing.Size(240,20)
+    $textBox.Location = New-Object System.Drawing.Point(10, 40)
+    $textBox.Size = New-Object System.Drawing.Size(240, 20)
     $textBox.PasswordChar = '*'
     $textBox.MaxLength = 4
 
     $okButton = New-Object System.Windows.Forms.Button
-    $okButton.Location = New-Object System.Drawing.Point(90,70)
-    $okButton.Size = New-Object System.Drawing.Size(75,25)
+    $okButton.Location = New-Object System.Drawing.Point(90, 70)
+    $okButton.Size = New-Object System.Drawing.Size(75, 25)
     $okButton.Text = "Verify"
     $okButton.DialogResult = "OK"
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(175,70)
-    $cancelButton.Size = New-Object System.Drawing.Size(75,25)
+    $cancelButton.Location = New-Object System.Drawing.Point(175, 70)
+    $cancelButton.Size = New-Object System.Drawing.Size(75, 25)
     $cancelButton.Text = "Cancel"
     $cancelButton.DialogResult = "Cancel"
 
@@ -187,12 +187,12 @@ function Get-PinInput {
 function Format-TitleCaseEmail {
     param([string]$email)
     if (-not $email -or -not $email.Contains("@")) { return $email }
-    $parts     = $email -split "@", 2
+    $parts = $email -split "@", 2
     $localPart = $parts[0]
-    $domain    = $parts[1]
-    $words     = $localPart -split "\."
-    $titled    = $words | ForEach-Object {
-        if ($_.Length -gt 0) { $_.Substring(0,1).ToUpper() + $_.Substring(1).ToLower() }
+    $domain = $parts[1]
+    $words = $localPart -split "\."
+    $titled = $words | ForEach-Object {
+        if ($_.Length -gt 0) { $_.Substring(0, 1).ToUpper() + $_.Substring(1).ToLower() }
         else { $_ }
     }
     return ($titled -join ".") + "@" + $domain
@@ -461,7 +461,7 @@ function Test-FormCompletion {
         $allFilled = $false 
     }
     
-    $reqBoxes = @("cbCharging","cbScreen","cbTouch","cbNetwork","cbKeyboard","cbMouse","cbVideo","cbAudio","cbMic","cbCamera","cbUSB","cbPalm","cbBackplate","cbBase","cbHinge")
+    $reqBoxes = @("cbCharging", "cbScreen", "cbTouch", "cbNetwork", "cbKeyboard", "cbMouse", "cbVideo", "cbAudio", "cbMic", "cbCamera", "cbUSB", "cbPalm", "cbBackplate", "cbBase", "cbHinge")
     foreach ($box in $reqBoxes) {
         $selectedVal = $window.FindName($box).SelectedItem
         if ([string]::IsNullOrWhiteSpace($selectedVal) -or $selectedVal -eq "") { 
@@ -472,7 +472,8 @@ function Test-FormCompletion {
     if ($allFilled) {
         $saveInspectionBtn.IsEnabled = $true
         $saveInspectionBtn.Opacity = 1.0
-    } else {
+    }
+    else {
         $saveInspectionBtn.IsEnabled = $false
         $saveInspectionBtn.Opacity = 0.5
     }
@@ -488,69 +489,72 @@ foreach ($box in $cosmeticBoxes) { $window.FindName($box).Add_SelectionChanged({
 # DASHBOARD CLEANUP
 # ------------------------------------------------------------
 $resultsGrid.Add_AutoGeneratingColumn({
-    param($evtSender, $e)
-    if ($e.PropertyName -in @("Id", "RunDate", "start date", "Status")) {
-        $e.Cancel = $true
-    }
-})
+        param($evtSender, $e)
+        if ($e.PropertyName -in @("Id", "RunDate", "start date", "Status")) {
+            $e.Cancel = $true
+        }
+    })
 
 # ------------------------------------------------------------
 # QOL: AUTO-UPPERCASE SERIAL NUMBER
 # ------------------------------------------------------------
 $serialInput.Add_TextChanged({
-    $upperText = $serialInput.Text.ToUpper()
-    if ($serialInput.Text -cne $upperText) {
-        $currStart = $serialInput.SelectionStart
-        $serialInput.Text = $upperText
-        $serialInput.SelectionStart = $currStart
-    }
-})
+        $upperText = $serialInput.Text.ToUpper()
+        if ($serialInput.Text -cne $upperText) {
+            $currStart = $serialInput.SelectionStart
+            $serialInput.Text = $upperText
+            $serialInput.SelectionStart = $currStart
+        }
+    })
 
 # ------------------------------------------------------------
 # QOL: DUPLICATE CHECK ON "ENTER" KEY
 # ------------------------------------------------------------
 $serialInput.Add_KeyDown({
-    param($evtSender, $e)
-    if ($e.Key -eq 'Return' -or $e.Key -eq 'Enter') {
-        $val = $serialInput.Text.Trim()
-        if (-not [string]::IsNullOrWhiteSpace($val)) {
-            $existing = @()
-            if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
-                $existing = @($Global:DatabaseCSV | ConvertFrom-Csv | Select-Object -ExpandProperty SerialNumber -ErrorAction SilentlyContinue)
-            }
-            if ($val -in $existing) {
-                [System.Windows.MessageBox]::Show("Serial number '$val' already exists in the database.", "Duplicate Found", "OK", "Warning")
-            } else {
-                [System.Windows.MessageBox]::Show("Serial number '$val' is new. No duplicates found.", "Check Passed", "OK", "Information")
+        param($evtSender, $e)
+        if ($e.Key -eq 'Return' -or $e.Key -eq 'Enter') {
+            $val = $serialInput.Text.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($val)) {
+                $existing = @()
+                if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
+                    $existing = @($Global:DatabaseCSV | ConvertFrom-Csv | Select-Object -ExpandProperty SerialNumber -ErrorAction SilentlyContinue)
+                }
+                if ($val -in $existing) {
+                    [System.Windows.MessageBox]::Show("Serial number '$val' already exists in the database.", "Duplicate Found", "OK", "Warning")
+                }
+                else {
+                    [System.Windows.MessageBox]::Show("Serial number '$val' is new. No duplicates found.", "Check Passed", "OK", "Information")
+                }
             }
         }
-    }
-})
+    })
 
 # ------------------------------------------------------------
 # QOL: NOTES CHARACTER COUNTER
 # ------------------------------------------------------------
 $notesInput.Add_TextChanged({
-    $count = $notesInput.Text.Length
-    $notesCounter.Text = "($count chars)"
-    if ($count -gt 250) { 
-        $notesCounter.Foreground = "#DC3545" # Red 
-    } else { 
-        $notesCounter.Foreground = "Gray" 
-    }
-})
+        $count = $notesInput.Text.Length
+        $notesCounter.Text = "($count chars)"
+        if ($count -gt 250) { 
+            $notesCounter.Foreground = "#DC3545" # Red 
+        }
+        else { 
+            $notesCounter.Foreground = "Gray" 
+        }
+    })
 
 # ------------------------------------------------------------
 # QOL: SEARCH PLACEHOLDER TEXT VISIBILITY
 # ------------------------------------------------------------
 $searchBox.Add_TextChanged({
-    if ($searchBox.Text.Length -gt 0) {
-        $searchPlaceholder.Visibility = "Hidden"
-    } else {
-        $searchPlaceholder.Visibility = "Visible"
-    }
-    Update-Dashboard
-})
+        if ($searchBox.Text.Length -gt 0) {
+            $searchPlaceholder.Visibility = "Hidden"
+        }
+        else {
+            $searchPlaceholder.Visibility = "Visible"
+        }
+        Update-Dashboard
+    })
 
 # ------------------------------------------------------------
 # 1. AUTO-DETECT (Triggers only after Email is provided)
@@ -563,15 +567,17 @@ function Start-AutoDetect {
     
     try {
         $battery = Get-WmiObject -Class Win32_Battery -ErrorAction Stop
-        if ($battery -and $battery.BatteryStatus -in 2,3) { $window.FindName("cbCharging").SelectedItem = "Operational" }
+        if ($battery -and $battery.BatteryStatus -in 2, 3) { $window.FindName("cbCharging").SelectedItem = "Operational" }
         else { $window.FindName("cbCharging").SelectedItem = "Defective" }
-    } catch { $window.FindName("cbCharging").SelectedItem = "Not Applicable" }
+    }
+    catch { $window.FindName("cbCharging").SelectedItem = "Not Applicable" }
 
     try {
         $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" }
         if ($adapters) { $window.FindName("cbNetwork").SelectedItem = "Operational" }
         else { $window.FindName("cbNetwork").SelectedItem = "Defective" }
-    } catch { $window.FindName("cbNetwork").SelectedItem = "Not Applicable" }
+    }
+    catch { $window.FindName("cbNetwork").SelectedItem = "Not Applicable" }
     
     Test-FormCompletion
 }
@@ -583,18 +589,18 @@ $techEmailInput.Add_SelectionChanged({ Start-AutoDetect })
 # 2. CAMERA & KEYBOARD TESTS (Interactive Prompts)
 # ------------------------------------------------------------
 $window.FindName("BtnTestCamera").Add_Click({ 
-    Start-Process "microsoft.windows.camera:" 
-    $res = [System.Windows.MessageBox]::Show("Did the camera work properly?", "Camera Test", "YesNo", "Question")
-    if ($res -eq "Yes") { $window.FindName("cbCamera").SelectedItem = "Operational" }
-    elseif ($res -eq "No") { $window.FindName("cbCamera").SelectedItem = "Defective" }
-})
+        Start-Process "microsoft.windows.camera:" 
+        $res = [System.Windows.MessageBox]::Show("Did the camera work properly?", "Camera Test", "YesNo", "Question")
+        if ($res -eq "Yes") { $window.FindName("cbCamera").SelectedItem = "Operational" }
+        elseif ($res -eq "No") { $window.FindName("cbCamera").SelectedItem = "Defective" }
+    })
 
 $window.FindName("BtnTestKeys").Add_Click({ 
-    Start-Process "https://keyboardchecker.com/" 
-    $res = [System.Windows.MessageBox]::Show("Did all the keys on the keyboard work properly?", "Keyboard Test", "YesNo", "Question")
-    if ($res -eq "Yes") { $window.FindName("cbKeyboard").SelectedItem = "Operational" }
-    elseif ($res -eq "No") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
-})
+        Start-Process "https://keyboardchecker.com/" 
+        $res = [System.Windows.MessageBox]::Show("Did all the keys on the keyboard work properly?", "Keyboard Test", "YesNo", "Question")
+        if ($res -eq "Yes") { $window.FindName("cbKeyboard").SelectedItem = "Operational" }
+        elseif ($res -eq "No") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
+    })
 
 # ------------------------------------------------------------
 # 3. ASYNC AUDIO & MIC TEST (With Direct Volume API & Prompts)
@@ -606,165 +612,169 @@ $Global:tempAudioPath = "$env:TEMP\DQA_MicTest.wav"
 $Global:soundPlayer = New-Object System.Media.SoundPlayer
 
 $Global:audioTimer.Add_Tick({
-    $Global:audioTimer.Stop()
+        $Global:audioTimer.Stop()
     
-    if ($Global:audioState -eq 1) {
-        $saveCmd = 'save recsound "' + $Global:tempAudioPath + '"'
-        [AudioHelper]::mciSendString("stop recsound",  [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-        [AudioHelper]::mciSendString($saveCmd,         [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-        [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+        if ($Global:audioState -eq 1) {
+            $saveCmd = 'save recsound "' + $Global:tempAudioPath + '"'
+            [AudioHelper]::mciSendString("stop recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+            [AudioHelper]::mciSendString($saveCmd, [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+            [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
 
-        $audioStatusLabel.Text = "[PLAYING] Audio playing back... Listen to your speakers."
-        $audioStatusLabel.Foreground = "#002D62"
+            $audioStatusLabel.Text = "[PLAYING] Audio playing back... Listen to your speakers."
+            $audioStatusLabel.Foreground = "#002D62"
 
-        if (Test-Path $Global:tempAudioPath) {
-            $Global:soundPlayer.SoundLocation = $Global:tempAudioPath
-            $Global:soundPlayer.Play() 
+            if (Test-Path $Global:tempAudioPath) {
+                $Global:soundPlayer.SoundLocation = $Global:tempAudioPath
+                $Global:soundPlayer.Play() 
+            }
+        
+            $Global:audioState = 2
+            $Global:audioTimer.Start() 
+        
         }
+        elseif ($Global:audioState -eq 2) {
+            $audioStatusLabel.Text = "[DONE] Audio test complete."
+            $audioStatusLabel.Foreground = "#28A745"
+            Remove-Item $Global:tempAudioPath -Force -ErrorAction SilentlyContinue
         
-        $Global:audioState = 2
-        $Global:audioTimer.Start() 
-        
-    } elseif ($Global:audioState -eq 2) {
-        $audioStatusLabel.Text = "[DONE] Audio test complete."
-        $audioStatusLabel.Foreground = "#28A745"
-        Remove-Item $Global:tempAudioPath -Force -ErrorAction SilentlyContinue
-        
-        $resAudio = [System.Windows.MessageBox]::Show("Did you hear the audio playing from speakers or not?", "Speaker Test", "YesNo", "Question")
-        if ($resAudio -eq "Yes") { 
-            $window.FindName("cbAudio").SelectedItem = "Operational"
-        } elseif ($resAudio -eq "No") { 
-            $window.FindName("cbAudio").SelectedItem = "Defective"
-        }
+            $resAudio = [System.Windows.MessageBox]::Show("Did you hear the audio playing from speakers or not?", "Speaker Test", "YesNo", "Question")
+            if ($resAudio -eq "Yes") { 
+                $window.FindName("cbAudio").SelectedItem = "Operational"
+            }
+            elseif ($resAudio -eq "No") { 
+                $window.FindName("cbAudio").SelectedItem = "Defective"
+            }
 
-        $resMic = [System.Windows.MessageBox]::Show("Did you hear audio playback sound and your voice or clap?", "Microphone Test", "YesNo", "Question")
-        if ($resMic -eq "Yes") { 
-            $window.FindName("cbMic").SelectedItem = "Operational"
-        } elseif ($resMic -eq "No") { 
-            $window.FindName("cbMic").SelectedItem = "Defective"
+            $resMic = [System.Windows.MessageBox]::Show("Did you hear audio playback sound and your voice or clap?", "Microphone Test", "YesNo", "Question")
+            if ($resMic -eq "Yes") { 
+                $window.FindName("cbMic").SelectedItem = "Operational"
+            }
+            elseif ($resMic -eq "No") { 
+                $window.FindName("cbMic").SelectedItem = "Defective"
+            }
         }
-    }
-})
+    })
 
 $window.FindName("BtnTestAudio").Add_Click({
     
-    # Automatically force unmute and set system volume to exactly 50% using Core Audio API
-    [AudioHelper]::SetVolume(50)
+        # Automatically force unmute and set system volume to exactly 50% using Core Audio API
+        [AudioHelper]::SetVolume(50)
 
-    $audioStatusLabel.Text = "[RECORDING] 5s... SPEAK or CLAP now!"
-    $audioStatusLabel.Foreground = "#DC3545"
+        $audioStatusLabel.Text = "[RECORDING] 5s... SPEAK or CLAP now!"
+        $audioStatusLabel.Foreground = "#DC3545"
     
-    [AudioHelper]::mciSendString("open new type waveaudio alias recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-    [AudioHelper]::mciSendString("record recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-    [AudioHelper]::PlayScaleAsync()
+        [AudioHelper]::mciSendString("open new type waveaudio alias recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+        [AudioHelper]::mciSendString("record recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+        [AudioHelper]::PlayScaleAsync()
     
-    $Global:audioState = 1
-    $Global:audioTimer.Start()
-})
+        $Global:audioState = 1
+        $Global:audioTimer.Start()
+    })
 
 # ------------------------------------------------------------
 # AUTO-FILL REMAINING TO OPERATIONAL (Excludes Auto-Detected & Interactive Tests)
 # ------------------------------------------------------------
 $window.FindName("BtnAutoFill").Add_Click({
-    # Excludes cbCharging and cbNetwork (which auto-detect) 
-    # Excludes Cam, Audio, Mic, Keyboard (which have interactive prompts)
-    $hwBoxesToFill = @("cbScreen","cbTouch","cbMouse","cbVideo","cbUSB")
-    foreach ($box in $hwBoxesToFill) {
-        if ([string]::IsNullOrWhiteSpace($window.FindName($box).Text)) { 
-            $window.FindName($box).SelectedItem = "Operational" 
+        # Excludes cbCharging and cbNetwork (which auto-detect) 
+        # Excludes Cam, Audio, Mic, Keyboard (which have interactive prompts)
+        $hwBoxesToFill = @("cbScreen", "cbTouch", "cbMouse", "cbVideo", "cbUSB")
+        foreach ($box in $hwBoxesToFill) {
+            if ([string]::IsNullOrWhiteSpace($window.FindName($box).Text)) { 
+                $window.FindName($box).SelectedItem = "Operational" 
+            }
         }
-    }
     
-    $cosmeticBoxesToFill = @("cbPalm","cbBackplate","cbBase","cbHinge")
-    foreach ($box in $cosmeticBoxesToFill) {
-        if ([string]::IsNullOrWhiteSpace($window.FindName($box).Text)) { 
-            $window.FindName($box).SelectedItem = "Acceptable" 
+        $cosmeticBoxesToFill = @("cbPalm", "cbBackplate", "cbBase", "cbHinge")
+        foreach ($box in $cosmeticBoxesToFill) {
+            if ([string]::IsNullOrWhiteSpace($window.FindName($box).Text)) { 
+                $window.FindName($box).SelectedItem = "Acceptable" 
+            }
         }
-    }
-    Test-FormCompletion
-})
+        Test-FormCompletion
+    })
 
 # ------------------------------------------------------------
 # 4. SAVE & DASHBOARD LOGIC (Modifies Script Content)
 # ------------------------------------------------------------
 $window.FindName("SaveInspectionBtn").Add_Click({
     
-    $durationSpan = (Get-Date) - $Global:sessionStartTime
-    $calcDuration = [math]::Round($durationSpan.TotalHours, 4)
-    if ($calcDuration -le 0) { $calcDuration = 0.01 }
+        $durationSpan = (Get-Date) - $Global:sessionStartTime
+        $calcDuration = [math]::Round($durationSpan.TotalHours, 4)
+        if ($calcDuration -le 0) { $calcDuration = 0.01 }
 
-    $rawEmail = $techEmailInput.Text.Trim()
-    if ($rawEmail -match "(?i)^sandeep") { $rawEmail = "Sandeep.Pokharel@trojans.dsu.edu" }
-    elseif ($rawEmail -match "(?i)^sandesh") { $rawEmail = "Sandesh.Dhakal@trojans.dsu.edu" }
-    $rawEmail = Format-TitleCaseEmail $rawEmail
-    $techEmailInput.Text = $rawEmail
+        $rawEmail = $techEmailInput.Text.Trim()
+        if ($rawEmail -match "(?i)^sandeep") { $rawEmail = "Sandeep.Pokharel@trojans.dsu.edu" }
+        elseif ($rawEmail -match "(?i)^sandesh") { $rawEmail = "Sandesh.Dhakal@trojans.dsu.edu" }
+        $rawEmail = Format-TitleCaseEmail $rawEmail
+        $techEmailInput.Text = $rawEmail
 
-    if ([string]::IsNullOrWhiteSpace($rawEmail) -or [string]::IsNullOrWhiteSpace($serialInput.Text)) {
-        [System.Windows.MessageBox]::Show("Technician Email and Serial Number are required.", "Error", "OK", "Warning")
-        return
-    }
+        if ([string]::IsNullOrWhiteSpace($rawEmail) -or [string]::IsNullOrWhiteSpace($serialInput.Text)) {
+            [System.Windows.MessageBox]::Show("Technician Email and Serial Number are required.", "Error", "OK", "Warning")
+            return
+        }
 
-    $savedSerial = $serialInput.Text
+        $savedSerial = $serialInput.Text
 
-    $existingSerials = @()
-    if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
-        $existingSerials = @($Global:DatabaseCSV | ConvertFrom-Csv | Select-Object -ExpandProperty SerialNumber -ErrorAction SilentlyContinue)
-    }
-    if ($savedSerial -in $existingSerials) {
-        $dupConfirm = [System.Windows.MessageBox]::Show(
-            "Serial number '$savedSerial' already exists in the database.`n`nDo you still want to save this inspection?",
-            "Duplicate Serial Number", "YesNo", "Warning"
-        )
-        if ($dupConfirm -ne "Yes") { return }
-    }
+        $existingSerials = @()
+        if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
+            $existingSerials = @($Global:DatabaseCSV | ConvertFrom-Csv | Select-Object -ExpandProperty SerialNumber -ErrorAction SilentlyContinue)
+        }
+        if ($savedSerial -in $existingSerials) {
+            $dupConfirm = [System.Windows.MessageBox]::Show(
+                "Serial number '$savedSerial' already exists in the database.`n`nDo you still want to save this inspection?",
+                "Duplicate Serial Number", "YesNo", "Warning"
+            )
+            if ($dupConfirm -ne "Yes") { return }
+        }
 
-    $R = [ordered]@{
-        TechnicianEmail = $rawEmail; SerialNumber = $savedSerial; Duration = $calcDuration
-        Charging = $window.FindName("cbCharging").Text; Screen = $window.FindName("cbScreen").Text
-        Touchscreen = $window.FindName("cbTouch").Text; NetworkAdapters = $window.FindName("cbNetwork").Text
-        Keyboard = $window.FindName("cbKeyboard").Text; MouseTrackpad = $window.FindName("cbMouse").Text
-        VideoPorts = $window.FindName("cbVideo").Text; AudioOutput = $window.FindName("cbAudio").Text
-        Microphone = $window.FindName("cbMic").Text; Camera = $window.FindName("cbCamera").Text
-        USBPorts = $window.FindName("cbUSB").Text
-        PalmRest = $window.FindName("cbPalm").Text; Backplate = $window.FindName("cbBackplate").Text
-        BaseAndVents = $window.FindName("cbBase").Text; Hinge = $window.FindName("cbHinge").Text
-        Notes = $notesInput.Text
-    }
+        $R = [ordered]@{
+            TechnicianEmail = $rawEmail; SerialNumber = $savedSerial; Duration = $calcDuration
+            Charging = $window.FindName("cbCharging").Text; Screen = $window.FindName("cbScreen").Text
+            Touchscreen = $window.FindName("cbTouch").Text; NetworkAdapters = $window.FindName("cbNetwork").Text
+            Keyboard = $window.FindName("cbKeyboard").Text; MouseTrackpad = $window.FindName("cbMouse").Text
+            VideoPorts = $window.FindName("cbVideo").Text; AudioOutput = $window.FindName("cbAudio").Text
+            Microphone = $window.FindName("cbMic").Text; Camera = $window.FindName("cbCamera").Text
+            USBPorts = $window.FindName("cbUSB").Text
+            PalmRest = $window.FindName("cbPalm").Text; Backplate = $window.FindName("cbBackplate").Text
+            BaseAndVents = $window.FindName("cbBase").Text; Hinge = $window.FindName("cbHinge").Text
+            Notes = $notesInput.Text
+        }
 
-    $failFound = $false
-    foreach ($val in $R.Values) { if ($val -eq "Defective" -or $val -eq "Needs Repair") { $failFound = $true } }
-    $FinalStatusDisplay = if ($failFound) { "FAILED" } else { "PASSED" }
+        $failFound = $false
+        foreach ($val in $R.Values) { if ($val -eq "Defective" -or $val -eq "Needs Repair") { $failFound = $true } }
+        $FinalStatusDisplay = if ($failFound) { "FAILED" } else { "PASSED" }
 
-    $R.Add("FinalStatus", $FinalStatusDisplay)
+        $R.Add("FinalStatus", $FinalStatusDisplay)
 
-    if ($rawEmail -notin $Global:SavedEmails) {
-        $Global:SavedEmails += $rawEmail
-        $techEmailInput.ItemsSource = $Global:SavedEmails
-    }
+        if ($rawEmail -notin $Global:SavedEmails) {
+            $Global:SavedEmails += $rawEmail
+            $techEmailInput.ItemsSource = $Global:SavedEmails
+        }
 
-    $csvLine = ConvertTo-Csv -InputObject ([PSCustomObject]$R) -NoTypeInformation | Select-Object -Last 1
-    $Global:DatabaseCSV += "`r`n" + $csvLine
+        $csvLine = ConvertTo-Csv -InputObject ([PSCustomObject]$R) -NoTypeInformation | Select-Object -Last 1
+        $Global:DatabaseCSV += "`r`n" + $csvLine
     
-    Update-ScriptData
+        Update-ScriptData
 
-    [System.Windows.MessageBox]::Show("Inspection saved inside the script! Status: $FinalStatusDisplay", "Success", "OK", "Information")
+        [System.Windows.MessageBox]::Show("Inspection saved inside the script! Status: $FinalStatusDisplay", "Success", "OK", "Information")
     
-    $lastSavedLabel.Text = "Last saved: $savedSerial at $((Get-Date).ToString('hh:mm tt'))"
+        $lastSavedLabel.Text = "Last saved: $savedSerial at $((Get-Date).ToString('hh:mm tt'))"
 
-    $serialInput.Text = ""; $notesInput.Text = ""; $audioStatusLabel.Text = " "
-    $Global:sessionStartTime = Get-Date 
+        $serialInput.Text = ""; $notesInput.Text = ""; $audioStatusLabel.Text = " "
+        $Global:sessionStartTime = Get-Date 
     
-    foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
-    foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
+        foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
+        foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
     
-    Test-FormCompletion
-    Update-Dashboard
-})
+        Test-FormCompletion
+        Update-Dashboard
+    })
 
 function Update-Dashboard {
     if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
         $data = @($Global:DatabaseCSV | ConvertFrom-Csv)
-    } else { $data = @() }
+    }
+    else { $data = @() }
 
     foreach ($row in $data) {
         $isFail = $false
@@ -800,120 +810,122 @@ $window.FindName("RefreshBtn").Add_Click({ Update-Dashboard })
 # RESET / CLEAR FORM BUTTON
 # ------------------------------------------------------------
 $window.FindName("ResetFormBtn").Add_Click({
-    $serialInput.Text        = ""
-    $notesInput.Text         = ""
-    $audioStatusLabel.Text   = " "
-    $techEmailInput.Text     = ""
-    $lastSavedLabel.Text     = " "
-    $Global:sessionStartTime = Get-Date
-    foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
-    foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
-    Test-FormCompletion
-})
+        $serialInput.Text = ""
+        $notesInput.Text = ""
+        $audioStatusLabel.Text = " "
+        $techEmailInput.Text = ""
+        $lastSavedLabel.Text = " "
+        $Global:sessionStartTime = Get-Date
+        foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
+        foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
+        Test-FormCompletion
+    })
 
 # ------------------------------------------------------------
 # DELETE TECHNICIAN EMAIL BUTTON
 # ------------------------------------------------------------
 $window.FindName("DeleteEmailBtn").Add_Click({
-    $emailToDelete = Show-DeleteEmailDialog
-    if ($emailToDelete) {
-        $confirm = [System.Windows.MessageBox]::Show(
-            "Permanently remove '$emailToDelete' from the dropdown?",
-            "Confirm Delete", "YesNo", "Warning"
-        )
-        if ($confirm -eq "Yes") {
-            $Global:SavedEmails = @($Global:SavedEmails | Where-Object { $_ -ne $emailToDelete })
-            $techEmailInput.ItemsSource = $Global:SavedEmails
-            Update-ScriptData
-            [System.Windows.MessageBox]::Show("Email removed and script updated.", "Done", "OK", "Information")
+        $emailToDelete = Show-DeleteEmailDialog
+        if ($emailToDelete) {
+            $confirm = [System.Windows.MessageBox]::Show(
+                "Permanently remove '$emailToDelete' from the dropdown?",
+                "Confirm Delete", "YesNo", "Warning"
+            )
+            if ($confirm -eq "Yes") {
+                $Global:SavedEmails = @($Global:SavedEmails | Where-Object { $_ -ne $emailToDelete })
+                $techEmailInput.ItemsSource = $Global:SavedEmails
+                Update-ScriptData
+                [System.Windows.MessageBox]::Show("Email removed and script updated.", "Done", "OK", "Information")
+            }
         }
-    }
-})
+    })
 $window.FindName("FilterBox").Add_SelectionChanged({ Update-Dashboard })
 
 # ------------------------------------------------------------
 # EXPORT ONLY (Creates the single output CSV on the USB)
 # ------------------------------------------------------------
 $window.FindName("ExportBtn").Add_Click({
-    $exportData = @($resultsGrid.ItemsSource)
-    if ($exportData.Count -eq 0) {
-        [System.Windows.MessageBox]::Show("No data to export.", "Export", "OK", "Information")
-        return
-    }
+        $exportData = @($resultsGrid.ItemsSource)
+        if ($exportData.Count -eq 0) {
+            [System.Windows.MessageBox]::Show("No data to export.", "Export", "OK", "Information")
+            return
+        }
     
-    $usbCheck = (Get-WmiObject Win32_LogicalDisk | Where-Object { $_.DriveType -eq 2 } | Select-Object -First 1).DeviceID
-    $exportDir = if ($usbCheck) { $usbCheck } else { "$env:USERPROFILE\Desktop" }
+        $usbCheck = (Get-WmiObject Win32_LogicalDisk | Where-Object { $_.DriveType -eq 2 } | Select-Object -First 1).DeviceID
+        $exportDir = if ($usbCheck) { $usbCheck } else { "$env:USERPROFILE\Desktop" }
     
-    $savePath = "$exportDir\DQA_Output_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"
+        $savePath = "$exportDir\DQA_Output_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"
     
-    $exportData | Select-Object * -ExcludeProperty Id, RunDate, "start date", Status | Export-Csv -Path $savePath -NoTypeInformation -Force
-    [System.Windows.MessageBox]::Show("Output successfully exported to:`n$savePath", "Export Complete", "OK", "Information")
-})
+        $exportData | Select-Object * -ExcludeProperty Id, RunDate, "start date", Status | Export-Csv -Path $savePath -NoTypeInformation -Force
+        [System.Windows.MessageBox]::Show("Output successfully exported to:`n$savePath", "Export Complete", "OK", "Information")
+    })
 
 # ------------------------------------------------------------
 # DELETE SELECTED ROW (Requires PIN: 5555)
 # ------------------------------------------------------------
 $window.FindName("DeleteRowBtn").Add_Click({
-    $selectedItem = $resultsGrid.SelectedItem
+        $selectedItem = $resultsGrid.SelectedItem
     
-    if ($null -eq $selectedItem) {
-        [System.Windows.MessageBox]::Show("Please select a laptop record from the dashboard to delete.", "No Selection", "OK", "Warning")
-        return
-    }
+        if ($null -eq $selectedItem) {
+            [System.Windows.MessageBox]::Show("Please select a laptop record from the dashboard to delete.", "No Selection", "OK", "Warning")
+            return
+        }
 
-    $enteredPin = Get-PinInput
+        $enteredPin = Get-PinInput
     
-    if ($enteredPin -eq "5555") {
-        $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
-        $matchIndex = -1
+        if ($enteredPin -eq "5555") {
+            $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
+            $matchIndex = -1
         
-        for ($i = 0; $i -lt $allData.Count; $i++) {
-            if ($allData[$i].SerialNumber -eq $selectedItem.SerialNumber -and $allData[$i].DurationHours -eq $selectedItem.DurationHours) {
-                $matchIndex = $i
-                break
+            for ($i = 0; $i -lt $allData.Count; $i++) {
+                if ($allData[$i].SerialNumber -eq $selectedItem.SerialNumber -and $allData[$i].DurationHours -eq $selectedItem.DurationHours) {
+                    $matchIndex = $i
+                    break
+                }
+            }
+        
+            if ($matchIndex -ge 0) {
+                $allData.RemoveAt($matchIndex)
+            
+                $csvHeader = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
+            
+                if ($allData.Count -gt 0) {
+                    $newCsvData = ($allData | Select-Object -Property TechnicianEmail, SerialNumber, DurationHours, Charging, Screen, Touchscreen, NetworkAdapters, Keyboard, MouseTrackpad, VideoPorts, AudioOutput, Microphone, Camera, USBPorts, PalmRest, Backplate, BaseAndVents, Hinge, Notes, FinalStatus | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
+                    $Global:DatabaseCSV = $csvHeader + "`r`n" + $newCsvData
+                }
+                else {
+                    $Global:DatabaseCSV = $csvHeader
+                }
+
+                Update-ScriptData
+                Update-Dashboard
+                [System.Windows.MessageBox]::Show("Laptop record '$($selectedItem.SerialNumber)' has been securely deleted.", "Success", "OK", "Information")
+            }
+            else {
+                [System.Windows.MessageBox]::Show("Could not locate the exact record in the database.", "Error", "OK", "Error")
             }
         }
-        
-        if ($matchIndex -ge 0) {
-            $allData.RemoveAt($matchIndex)
-            
-            $csvHeader = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
-            
-            if ($allData.Count -gt 0) {
-                $newCsvData = ($allData | Select-Object -Property TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
-                $Global:DatabaseCSV = $csvHeader + "`r`n" + $newCsvData
-            } else {
-                $Global:DatabaseCSV = $csvHeader
-            }
-
-            Update-ScriptData
-            Update-Dashboard
-            [System.Windows.MessageBox]::Show("Laptop record '$($selectedItem.SerialNumber)' has been securely deleted.", "Success", "OK", "Information")
-        } else {
-            [System.Windows.MessageBox]::Show("Could not locate the exact record in the database.", "Error", "OK", "Error")
+        elseif ($null -ne $enteredPin) {
+            [System.Windows.MessageBox]::Show("Incorrect PIN entered. Deletion canceled.", "Security Alert", "OK", "Error")
         }
-    }
-    elseif ($null -ne $enteredPin) {
-        [System.Windows.MessageBox]::Show("Incorrect PIN entered. Deletion canceled.", "Security Alert", "OK", "Error")
-    }
-})
+    })
 
 # ------------------------------------------------------------
 # CLEAR DASHBOARD (Requires PIN: 5555)
 # ------------------------------------------------------------
 $window.FindName("DeleteDbBtn").Add_Click({
-    $enteredPin = Get-PinInput
+        $enteredPin = Get-PinInput
     
-    if ($enteredPin -eq "5555") {
-        $Global:DatabaseCSV = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
-        Update-ScriptData
-        Update-Dashboard
-        [System.Windows.MessageBox]::Show("Laptop history securely cleared from script memory.", "Success", "OK", "Information")
-    }
-    elseif ($null -ne $enteredPin) {
-        [System.Windows.MessageBox]::Show("Incorrect PIN entered. Deletion canceled.", "Security Alert", "OK", "Error")
-    }
-})
+        if ($enteredPin -eq "5555") {
+            $Global:DatabaseCSV = "TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
+            Update-ScriptData
+            Update-Dashboard
+            [System.Windows.MessageBox]::Show("Laptop history securely cleared from script memory.", "Success", "OK", "Information")
+        }
+        elseif ($null -ne $enteredPin) {
+            [System.Windows.MessageBox]::Show("Incorrect PIN entered. Deletion canceled.", "Security Alert", "OK", "Error")
+        }
+    })
 
 Update-Dashboard
 $window.ShowDialog() | Out-Null
