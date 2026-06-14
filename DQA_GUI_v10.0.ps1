@@ -454,7 +454,7 @@ foreach ($box in $cosmeticBoxes) { $window.FindName($box).ItemsSource = $cosmeti
 # ------------------------------------------------------------
 # FORM COMPLETION CHECKER (Disables Save until complete)
 # ------------------------------------------------------------
-function Check-FormCompletion {
+function Test-FormCompletion {
     $allFilled = $true
     
     if ([string]::IsNullOrWhiteSpace($techEmailInput.Text) -or [string]::IsNullOrWhiteSpace($serialInput.Text)) { 
@@ -478,10 +478,10 @@ function Check-FormCompletion {
     }
 }
 
-$techEmailInput.Add_KeyUp({ Check-FormCompletion })
-$serialInput.Add_TextChanged({ Check-FormCompletion })
-foreach ($box in $hwBoxes) { $window.FindName($box).Add_SelectionChanged({ Check-FormCompletion }) }
-foreach ($box in $cosmeticBoxes) { $window.FindName($box).Add_SelectionChanged({ Check-FormCompletion }) }
+$techEmailInput.Add_KeyUp({ Test-FormCompletion })
+$serialInput.Add_TextChanged({ Test-FormCompletion })
+foreach ($box in $hwBoxes) { $window.FindName($box).Add_SelectionChanged({ Test-FormCompletion }) }
+foreach ($box in $cosmeticBoxes) { $window.FindName($box).Add_SelectionChanged({ Test-FormCompletion }) }
 
 
 # ------------------------------------------------------------
@@ -573,7 +573,7 @@ function Start-AutoDetect {
         else { $window.FindName("cbNetwork").SelectedItem = "Defective" }
     } catch { $window.FindName("cbNetwork").SelectedItem = "Not Applicable" }
     
-    Check-FormCompletion
+    Test-FormCompletion
 }
 
 $techEmailInput.Add_LostFocus({ Start-AutoDetect })
@@ -681,7 +681,7 @@ $window.FindName("BtnAutoFill").Add_Click({
             $window.FindName($box).SelectedItem = "Acceptable" 
         }
     }
-    Check-FormCompletion
+    Test-FormCompletion
 })
 
 # ------------------------------------------------------------
@@ -757,7 +757,7 @@ $window.FindName("SaveInspectionBtn").Add_Click({
     foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
     foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
     
-    Check-FormCompletion
+    Test-FormCompletion
     Update-Dashboard
 })
 
@@ -808,7 +808,7 @@ $window.FindName("ResetFormBtn").Add_Click({
     $Global:sessionStartTime = Get-Date
     foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
     foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
-    Check-FormCompletion
+    Test-FormCompletion
 })
 
 # ------------------------------------------------------------
