@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 #  DQA_GUI.ps1  -  Device Quality Assurance (Automated GUI)
 #  DSU IT Support 
 #  Author: Sandeep Pokharel
@@ -18,9 +18,85 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # ------------------------------------------------------------
+# FORCE DPI AWARENESS (Fixes blurry graphics on laptops like Lenovo)
+# ------------------------------------------------------------
+try {
+    Add-Type -TypeDefinition @"
+    using System;
+    using System.Runtime.InteropServices;
+    public static class DPIHelper {
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
+    }
+"@ -ErrorAction SilentlyContinue
+    [DPIHelper]::SetProcessDPIAware() | Out-Null
+}
+catch { }
+
+# ------------------------------------------------------------
 # GLOBAL CONFIGURATION
 # ------------------------------------------------------------
 $Global:AdminPin = "5555"
+
+# ------------------------------------------------------------
+# AUTO-CONNECT GUEST WIFI (IF NO INTERNET)
+# ------------------------------------------------------------
+try {
+    $isConnected = $false
+    # Quick check: If there are any active network profiles, we are connected to Ethernet or some Wi-Fi
+    $netProfiles = Get-NetConnectionProfile -ErrorAction SilentlyContinue
+    if ($netProfiles) { 
+        $isConnected = $true 
+    }
+    
+    if (-not $isConnected) {
+        $wlanProfiles = netsh wlan show profiles
+        if (-not ($wlanProfiles -match "\bGuest\b")) {
+            $xmlProfile = @"
+<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>Guest</name>
+    <SSIDConfig>
+        <SSID>
+            <name>Guest</name>
+        </SSID>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>auto</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>open</authentication>
+                <encryption>none</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+        </security>
+    </MSM>
+</WLANProfile>
+"@
+            $xmlPath = "$env:TEMP\Guest_WiFi_Profile.xml"
+            $xmlProfile | Out-File -FilePath $xmlPath -Encoding ascii
+            netsh wlan add profile filename="$xmlPath" | Out-Null
+            Start-Sleep -Milliseconds 500
+            Remove-Item -Path $xmlPath -ErrorAction SilentlyContinue
+        }
+        
+        $connectResult = netsh wlan connect name="Guest" ssid="Guest" 2>&1
+        $connectOutput = $connectResult -join " "
+        
+        # If netsh fails to connect (e.g. radio powered down, no interface, etc.)
+        if ($LASTEXITCODE -ne 0 -or $connectOutput -match "powered down" -or $connectOutput -match "not running") {
+            [System.Windows.Forms.MessageBox]::Show("The Wi-Fi script could not connect!`n`nReason: $connectOutput`n`nPlease ensure your Wi-Fi toggle is turned ON in the settings window that opens, then close this box.", "Wi-Fi Connection Issue", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            Start-Process "ms-settings:network-wifi"
+        }
+        
+        # We removed the 4-second sleep here! The Wi-Fi will connect in the background 
+        # while the GUI continues to load instantly.
+    }
+}
+catch {
+    [System.Windows.Forms.MessageBox]::Show("Auto-connect Wi-Fi failed: $($_.Exception.Message)", "Wi-Fi Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+}
 
 # ------------------------------------------------------------
 # DURATION TRACKER & ASYNC AUDIO SETUP (WITH CORE AUDIO API)
@@ -263,27 +339,53 @@ function Show-KeyboardTester {
     $kbdXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Native Keyboard Tester" Height="600" Width="1000" WindowStartupLocation="CenterScreen" Background="#2C3E50" Topmost="True" Focusable="True">
+        Title="Native Keyboard Tester" Height="650" Width="1100" WindowStartupLocation="CenterScreen" Background="#EAEAED" Topmost="True" Focusable="True" SnapsToDevicePixels="True" UseLayoutRounding="True">
     <Window.Resources>
+        <!-- Standard Key Style -->
         <Style TargetType="Border">
-            <Setter Property="Background" Value="#34495E"/>
-            <Setter Property="CornerRadius" Value="4"/>
-            <Setter Property="Margin" Value="2"/>
-            <Setter Property="BorderBrush" Value="#2C3E50"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="BorderBrush" Value="#D0D0D0"/>
             <Setter Property="BorderThickness" Value="1"/>
         </Style>
+        
+        <!-- Standard Text Style -->
         <Style TargetType="TextBlock">
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Foreground" Value="#A0A0A0"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="TextAlignment" Value="Center"/>
         </Style>
+
+        <!-- Modifier Text Style -->
+        <Style x:Key="ModText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+
+        <!-- Dark Key Style for fn and eject -->
+        <Style x:Key="DarkKey" TargetType="Border" BasedOn="{StaticResource {x:Type Border}}">
+            <Setter Property="Background" Value="#888888"/>
+            <Setter Property="BorderBrush" Value="#666666"/>
+        </Style>
+        <Style x:Key="DarkText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontSize" Value="14"/>
+        </Style>
+        
+        <!-- No Border for gaps -->
+        <Style x:Key="Gap" TargetType="Border">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Effect" Value="{x:Null}"/>
+        </Style>
+        
         <Style TargetType="Button">
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Focusable" Value="False"/> <!-- Prevents Space/Enter from clicking the button accidentally -->
+            <Setter Property="Focusable" Value="False"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -300,151 +402,172 @@ function Show-KeyboardTester {
             </Setter>
         </Style>
     </Window.Resources>
-    <Grid Margin="15">
+    
+    <Grid Margin="20">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/> <!-- Keyboard layout -->
+            <RowDefinition Height="*"/>    <!-- Spacer -->
+            <RowDefinition Height="Auto"/> <!-- Buttons -->
         </Grid.RowDefinitions>
-        
-        <!-- Row 1: Esc, F1-F12, PrtScn, Insert, Delete -->
-        <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Center">
-            <Border x:Name="Key_Escape" Width="45" Height="45"><TextBlock Text="Esc"/></Border>
-            <Border Width="15" Background="Transparent"/>
-            <Border x:Name="Key_F1" Width="45" Height="45"><TextBlock Text="F1"/></Border>
-            <Border x:Name="Key_F2" Width="45" Height="45"><TextBlock Text="F2"/></Border>
-            <Border x:Name="Key_F3" Width="45" Height="45"><TextBlock Text="F3"/></Border>
-            <Border x:Name="Key_F4" Width="45" Height="45"><TextBlock Text="F4"/></Border>
-            <Border Width="10" Background="Transparent"/>
-            <Border x:Name="Key_F5" Width="45" Height="45"><TextBlock Text="F5"/></Border>
-            <Border x:Name="Key_F6" Width="45" Height="45"><TextBlock Text="F6"/></Border>
-            <Border x:Name="Key_F7" Width="45" Height="45"><TextBlock Text="F7"/></Border>
-            <Border x:Name="Key_F8" Width="45" Height="45"><TextBlock Text="F8"/></Border>
-            <Border Width="10" Background="Transparent"/>
-            <Border x:Name="Key_F9" Width="45" Height="45"><TextBlock Text="F9"/></Border>
-            <Border x:Name="Key_F10" Width="45" Height="45"><TextBlock Text="F10"/></Border>
-            <Border x:Name="Key_F11" Width="45" Height="45"><TextBlock Text="F11"/></Border>
-            <Border x:Name="Key_F12" Width="45" Height="45"><TextBlock Text="F12"/></Border>
-            <Border Width="15" Background="Transparent"/>
-            <Border x:Name="Key_Snapshot" Width="55" Height="45"><TextBlock Text="PrtScn"/></Border>
-            <Border x:Name="Key_Insert" Width="55" Height="45"><TextBlock Text="Insert"/></Border>
-            <Border x:Name="Key_Delete" Width="55" Height="45"><TextBlock Text="Delete"/></Border>
-        </StackPanel>
 
-        <!-- Row 2: Numbers + Home/End -->
-        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,5,0,0">
-            <Border x:Name="Key_Oem3" Width="45" Height="45"><TextBlock Text="~"/></Border>
-            <Border x:Name="Key_D1" Width="45" Height="45"><TextBlock Text="1"/></Border>
-            <Border x:Name="Key_D2" Width="45" Height="45"><TextBlock Text="2"/></Border>
-            <Border x:Name="Key_D3" Width="45" Height="45"><TextBlock Text="3"/></Border>
-            <Border x:Name="Key_D4" Width="45" Height="45"><TextBlock Text="4"/></Border>
-            <Border x:Name="Key_D5" Width="45" Height="45"><TextBlock Text="5"/></Border>
-            <Border x:Name="Key_D6" Width="45" Height="45"><TextBlock Text="6"/></Border>
-            <Border x:Name="Key_D7" Width="45" Height="45"><TextBlock Text="7"/></Border>
-            <Border x:Name="Key_D8" Width="45" Height="45"><TextBlock Text="8"/></Border>
-            <Border x:Name="Key_D9" Width="45" Height="45"><TextBlock Text="9"/></Border>
-            <Border x:Name="Key_D0" Width="45" Height="45"><TextBlock Text="0"/></Border>
-            <Border x:Name="Key_OemMinus" Width="45" Height="45"><TextBlock Text="-"/></Border>
-            <Border x:Name="Key_OemPlus" Width="45" Height="45"><TextBlock Text="="/></Border>
-            <Border x:Name="Key_Back" Width="90" Height="45"><TextBlock Text="Back"/></Border>
-            <Border Width="15" Background="Transparent"/>
-            <Border x:Name="Key_Home" Width="55" Height="45"><TextBlock Text="Home"/></Border>
-            <Border x:Name="Key_End" Width="55" Height="45"><TextBlock Text="End"/></Border>
-        </StackPanel>
-
-        <!-- Row 3: QWERTY + PgUp/PgDn -->
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center">
-            <Border x:Name="Key_Tab" Width="70" Height="45"><TextBlock Text="Tab"/></Border>
-            <Border x:Name="Key_Q" Width="45" Height="45"><TextBlock Text="Q"/></Border>
-            <Border x:Name="Key_W" Width="45" Height="45"><TextBlock Text="W"/></Border>
-            <Border x:Name="Key_E" Width="45" Height="45"><TextBlock Text="E"/></Border>
-            <Border x:Name="Key_R" Width="45" Height="45"><TextBlock Text="R"/></Border>
-            <Border x:Name="Key_T" Width="45" Height="45"><TextBlock Text="T"/></Border>
-            <Border x:Name="Key_Y" Width="45" Height="45"><TextBlock Text="Y"/></Border>
-            <Border x:Name="Key_U" Width="45" Height="45"><TextBlock Text="U"/></Border>
-            <Border x:Name="Key_I" Width="45" Height="45"><TextBlock Text="I"/></Border>
-            <Border x:Name="Key_O" Width="45" Height="45"><TextBlock Text="O"/></Border>
-            <Border x:Name="Key_P" Width="45" Height="45"><TextBlock Text="P"/></Border>
-            <Border x:Name="Key_OemOpenBrackets" Width="45" Height="45"><TextBlock Text="["/></Border>
-            <Border x:Name="Key_OemCloseBrackets" Width="45" Height="45"><TextBlock Text="]"/></Border>
-            <Border x:Name="Key_Oem5" Width="70" Height="45"><TextBlock Text="\"/></Border>
-            <Border Width="15" Background="Transparent"/>
-            <Border x:Name="Key_PageUp" Width="55" Height="45"><TextBlock Text="PgUp"/></Border>
-            <Border x:Name="Key_PageDown" Width="55" Height="45"><TextBlock Text="PgDn"/></Border>
-        </StackPanel>
-
-        <!-- Row 4: ASDF -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Center">
-            <Border x:Name="Key_Capital" Width="80" Height="45"><TextBlock Text="Caps"/></Border>
-            <Border x:Name="Key_A" Width="45" Height="45"><TextBlock Text="A"/></Border>
-            <Border x:Name="Key_S" Width="45" Height="45"><TextBlock Text="S"/></Border>
-            <Border x:Name="Key_D" Width="45" Height="45"><TextBlock Text="D"/></Border>
-            <Border x:Name="Key_F" Width="45" Height="45"><TextBlock Text="F"/></Border>
-            <Border x:Name="Key_G" Width="45" Height="45"><TextBlock Text="G"/></Border>
-            <Border x:Name="Key_H" Width="45" Height="45"><TextBlock Text="H"/></Border>
-            <Border x:Name="Key_J" Width="45" Height="45"><TextBlock Text="J"/></Border>
-            <Border x:Name="Key_K" Width="45" Height="45"><TextBlock Text="K"/></Border>
-            <Border x:Name="Key_L" Width="45" Height="45"><TextBlock Text="L"/></Border>
-            <Border x:Name="Key_Oem1" Width="45" Height="45"><TextBlock Text=";"/></Border>
-            <Border x:Name="Key_OemQuotes" Width="45" Height="45"><TextBlock Text="'"/></Border>
-            <Border x:Name="Key_Return" Width="105" Height="45"><TextBlock Text="Enter"/></Border>
-            <Border Width="125" Background="Transparent"/>
-        </StackPanel>
-
-        <!-- Row 5: ZXCV -->
-        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Center">
-            <Border x:Name="Key_LeftShift" Width="105" Height="45"><TextBlock Text="L Shift"/></Border>
-            <Border x:Name="Key_Z" Width="45" Height="45"><TextBlock Text="Z"/></Border>
-            <Border x:Name="Key_X" Width="45" Height="45"><TextBlock Text="X"/></Border>
-            <Border x:Name="Key_C" Width="45" Height="45"><TextBlock Text="C"/></Border>
-            <Border x:Name="Key_V" Width="45" Height="45"><TextBlock Text="V"/></Border>
-            <Border x:Name="Key_B" Width="45" Height="45"><TextBlock Text="B"/></Border>
-            <Border x:Name="Key_N" Width="45" Height="45"><TextBlock Text="N"/></Border>
-            <Border x:Name="Key_M" Width="45" Height="45"><TextBlock Text="M"/></Border>
-            <Border x:Name="Key_OemComma" Width="45" Height="45"><TextBlock Text=","/></Border>
-            <Border x:Name="Key_OemPeriod" Width="45" Height="45"><TextBlock Text="."/></Border>
-            <Border x:Name="Key_OemQuestion" Width="45" Height="45"><TextBlock Text="/"/></Border>
-            <Border x:Name="Key_RightShift" Width="105" Height="45"><TextBlock Text="R Shift"/></Border>
-            <Border Width="125" Background="Transparent"/>
-        </StackPanel>
-
-        <!-- Row 6: Space -->
-        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Center">
-            <Border x:Name="Key_LeftCtrl" Width="55" Height="45"><TextBlock Text="Ctrl"/></Border>
-            <Border x:Name="Key_LWin" Width="55" Height="45"><TextBlock Text="Win"/></Border>
-            <Border x:Name="Key_LeftAlt" Width="55" Height="45"><TextBlock Text="Alt"/></Border>
-            <Border x:Name="Key_Space" Width="260" Height="45"><TextBlock Text="Space"/></Border>
-            <Border x:Name="Key_RightAlt" Width="55" Height="45"><TextBlock Text="Alt"/></Border>
-            <Border x:Name="Key_Apps" Width="55" Height="45"><TextBlock Text="Menu"/></Border>
-            <Border x:Name="Key_RightCtrl" Width="55" Height="45"><TextBlock Text="Ctrl"/></Border>
+        <Grid Grid.Row="0" HorizontalAlignment="Center" VerticalAlignment="Top">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/> <!-- Main Block -->
+                <ColumnDefinition Width="30"/>   <!-- Gap -->
+                <ColumnDefinition Width="Auto"/> <!-- Nav Block -->
+            </Grid.ColumnDefinitions>
             
-            <Border Width="25" Background="Transparent"/>
-            <Border x:Name="Key_Left" Width="45" Height="45"><TextBlock Text="Left"/></Border>
-            <StackPanel>
-                <Border x:Name="Key_Up" Width="45" Height="21" Margin="2,2,2,0"><TextBlock Text="Up" FontSize="10"/></Border>
-                <Border x:Name="Key_Down" Width="45" Height="22" Margin="2,0,2,2"><TextBlock Text="Down" FontSize="10"/></Border>
-            </StackPanel>
-            <Border x:Name="Key_Right" Width="45" Height="45"><TextBlock Text="Right"/></Border>
-            <Border Width="20" Background="Transparent"/>
-        </StackPanel>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/> <!-- Row 0 -->
+                <RowDefinition Height="Auto"/> <!-- Row 1 -->
+                <RowDefinition Height="Auto"/> <!-- Row 2 -->
+                <RowDefinition Height="Auto"/> <!-- Row 3 -->
+                <RowDefinition Height="Auto"/> <!-- Row 4 -->
+                <RowDefinition Height="Auto"/> <!-- Row 5 -->
+            </Grid.RowDefinitions>
 
-        <!-- Media keys (Volume/Brightness are usually hardware or standard media keys) -->
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
-            <Border x:Name="Key_VolumeMute" Width="55" Height="30"><TextBlock Text="Mute"/></Border>
-            <Border x:Name="Key_VolumeDown" Width="55" Height="30"><TextBlock Text="Vol -"/></Border>
-            <Border x:Name="Key_VolumeUp" Width="55" Height="30"><TextBlock Text="Vol +"/></Border>
-            <Border x:Name="Key_MediaPlayPause" Width="55" Height="30"><TextBlock Text="Play"/></Border>
-            <TextBlock Text="(Media/Volume keys may not register if intercepted by OS)" Foreground="#7F8C8D" Margin="10,0,0,0" VerticalAlignment="Center" FontStyle="Italic"/>
-        </StackPanel>
+            <!-- ===================== MAIN BLOCK ===================== -->
+            
+            <!-- ROW 0: esc, F-keys, eject -->
+            <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Margin="0,0,0,10">
+                <Border x:Name="Key_Escape" Width="50" Height="35"><TextBlock Text="esc" Style="{StaticResource ModText}"/></Border>
+                <Border Width="10" Style="{StaticResource Gap}"/>
+                <Border x:Name="Key_F1" Width="50" Height="35"><TextBlock Text="F1" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F2" Width="50" Height="35"><TextBlock Text="F2" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F3" Width="50" Height="35"><TextBlock Text="F3" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F4" Width="50" Height="35"><TextBlock Text="F4" Style="{StaticResource ModText}"/></Border>
+                <Border Width="10" Style="{StaticResource Gap}"/>
+                <Border x:Name="Key_F5" Width="50" Height="35"><TextBlock Text="F5" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F6" Width="50" Height="35"><TextBlock Text="F6" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F7" Width="50" Height="35"><TextBlock Text="F7" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F8" Width="50" Height="35"><TextBlock Text="F8" Style="{StaticResource ModText}"/></Border>
+                <Border Width="10" Style="{StaticResource Gap}"/>
+                <Border x:Name="Key_F9" Width="50" Height="35"><TextBlock Text="F9" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F10" Width="50" Height="35"><TextBlock Text="F10" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F11" Width="50" Height="35"><TextBlock Text="F11" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_F12" Width="50" Height="35"><TextBlock Text="F12" Style="{StaticResource ModText}"/></Border>
+                <Border Width="10" Style="{StaticResource Gap}"/>
+                <Border x:Name="Key_Sleep" Width="50" Height="35" Style="{StaticResource DarkKey}"><TextBlock Text="⏏" Style="{StaticResource DarkText}"/></Border>
+            </StackPanel>
+
+            <!-- ROW 1: Numbers -->
+            <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal">
+                <Border x:Name="Key_Oem3" Width="50" Height="50"><TextBlock Text="~&#x0a;`" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D1" Width="50" Height="50"><TextBlock Text="!&#x0a;1" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D2" Width="50" Height="50"><TextBlock Text="@&#x0a;2" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D3" Width="50" Height="50"><TextBlock Text="#&#x0a;3" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D4" Width="50" Height="50"><TextBlock Text="$&#x0a;4" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D5" Width="50" Height="50"><TextBlock Text="%&#x0a;5" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D6" Width="50" Height="50"><TextBlock Text="^&#x0a;6" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D7" Width="50" Height="50"><TextBlock Text="&amp;&#x0a;7" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D8" Width="50" Height="50"><TextBlock Text="*&#x0a;8" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D9" Width="50" Height="50"><TextBlock Text="(&#x0a;9" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_D0" Width="50" Height="50"><TextBlock Text=")&#x0a;0" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_OemMinus" Width="50" Height="50"><TextBlock Text="_&#x0a;-" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_OemPlus" Width="50" Height="50"><TextBlock Text="+&#x0a;=" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Back" Width="78" Height="50"><TextBlock Text="backspace" Style="{StaticResource ModText}"/></Border>
+            </StackPanel>
+
+            <!-- ROW 2: QWERTY -->
+            <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal">
+                <Border x:Name="Key_Tab" Width="78" Height="50"><TextBlock Text="tab" Style="{StaticResource ModText}" HorizontalAlignment="Left" Margin="10,0,0,0"/></Border>
+                <Border x:Name="Key_Q" Width="50" Height="50"><TextBlock Text="Q"/></Border>
+                <Border x:Name="Key_W" Width="50" Height="50"><TextBlock Text="W"/></Border>
+                <Border x:Name="Key_E" Width="50" Height="50"><TextBlock Text="E"/></Border>
+                <Border x:Name="Key_R" Width="50" Height="50"><TextBlock Text="R"/></Border>
+                <Border x:Name="Key_T" Width="50" Height="50"><TextBlock Text="T"/></Border>
+                <Border x:Name="Key_Y" Width="50" Height="50"><TextBlock Text="Y"/></Border>
+                <Border x:Name="Key_U" Width="50" Height="50"><TextBlock Text="U"/></Border>
+                <Border x:Name="Key_I" Width="50" Height="50"><TextBlock Text="I"/></Border>
+                <Border x:Name="Key_O" Width="50" Height="50"><TextBlock Text="O"/></Border>
+                <Border x:Name="Key_P" Width="50" Height="50"><TextBlock Text="P"/></Border>
+                <Border x:Name="Key_OemOpenBrackets" Width="50" Height="50"><TextBlock Text="{}{&#x0a;[" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_OemCloseBrackets" Width="50" Height="50"><TextBlock Text="}&#x0a;]" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Oem5" Width="50" Height="50"><TextBlock Text="|&#x0a;\" Style="{StaticResource ModText}"/></Border>
+            </StackPanel>
+
+            <!-- ROW 3: ASDF -->
+            <StackPanel Grid.Row="3" Grid.Column="0" Orientation="Horizontal">
+                <Border x:Name="Key_Capital" Width="92" Height="50"><TextBlock Text="caps lock" Style="{StaticResource ModText}" HorizontalAlignment="Left" Margin="10,0,0,0"/></Border>
+                <Border x:Name="Key_A" Width="50" Height="50"><TextBlock Text="A"/></Border>
+                <Border x:Name="Key_S" Width="50" Height="50"><TextBlock Text="S"/></Border>
+                <Border x:Name="Key_D" Width="50" Height="50"><TextBlock Text="D"/></Border>
+                <Border x:Name="Key_F" Width="50" Height="50"><TextBlock Text="F"/></Border>
+                <Border x:Name="Key_G" Width="50" Height="50"><TextBlock Text="G"/></Border>
+                <Border x:Name="Key_H" Width="50" Height="50"><TextBlock Text="H"/></Border>
+                <Border x:Name="Key_J" Width="50" Height="50"><TextBlock Text="J"/></Border>
+                <Border x:Name="Key_K" Width="50" Height="50"><TextBlock Text="K"/></Border>
+                <Border x:Name="Key_L" Width="50" Height="50"><TextBlock Text="L"/></Border>
+                <Border x:Name="Key_Oem1" Width="50" Height="50"><TextBlock Text=":&#x0a;;" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_OemQuotes" Width="50" Height="50"><TextBlock Text="&quot;&#x0a;'" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Return" Width="86" Height="50"><TextBlock Text="enter" Style="{StaticResource ModText}" HorizontalAlignment="Right" Margin="0,0,10,0"/></Border>
+            </StackPanel>
+
+            <!-- ROW 4: ZXCV -->
+            <StackPanel Grid.Row="4" Grid.Column="0" Orientation="Horizontal">
+                <Border x:Name="Key_LeftShift" Width="120" Height="50"><TextBlock Text="shift" Style="{StaticResource ModText}" HorizontalAlignment="Left" Margin="10,0,0,0"/></Border>
+                <Border x:Name="Key_Z" Width="50" Height="50"><TextBlock Text="Z"/></Border>
+                <Border x:Name="Key_X" Width="50" Height="50"><TextBlock Text="X"/></Border>
+                <Border x:Name="Key_C" Width="50" Height="50"><TextBlock Text="C"/></Border>
+                <Border x:Name="Key_V" Width="50" Height="50"><TextBlock Text="V"/></Border>
+                <Border x:Name="Key_B" Width="50" Height="50"><TextBlock Text="B"/></Border>
+                <Border x:Name="Key_N" Width="50" Height="50"><TextBlock Text="N"/></Border>
+                <Border x:Name="Key_M" Width="50" Height="50"><TextBlock Text="M"/></Border>
+                <Border x:Name="Key_OemComma" Width="50" Height="50"><TextBlock Text="&lt;&#x0a;," Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_OemPeriod" Width="50" Height="50"><TextBlock Text="&gt;&#x0a;." Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_OemQuestion" Width="50" Height="50"><TextBlock Text="?&#x0a;/" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_RightShift" Width="114" Height="50"><TextBlock Text="shift" Style="{StaticResource ModText}" HorizontalAlignment="Right" Margin="0,0,10,0"/></Border>
+            </StackPanel>
+
+            <!-- ROW 5: Spacebar & Arrows -->
+            <StackPanel Grid.Row="5" Grid.Column="0" Orientation="Horizontal">
+                <Border x:Name="Key_Fn" Width="50" Height="50" Style="{StaticResource DarkKey}"><TextBlock Text="fn" Style="{StaticResource DarkText}"/></Border>
+                <Border x:Name="Key_LeftCtrl" Width="55" Height="50"><TextBlock Text="control" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_LeftAlt" Width="50" Height="50"><TextBlock Text="alt" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_LWin" Width="55" Height="50"><TextBlock Text="windows" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Space" Width="266" Height="50"><TextBlock Text=""/></Border>
+                <Border x:Name="Key_RWin" Width="55" Height="50"><TextBlock Text="windows" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_RightAlt" Width="50" Height="50"><TextBlock Text="alt" Style="{StaticResource ModText}"/></Border>
+                
+                <Border Width="11" Style="{StaticResource Gap}"/>
+                <!-- Arrows Block -->
+                <Border x:Name="Key_Left" Width="45" Height="25" VerticalAlignment="Bottom" Margin="3,3,1,3"><TextBlock Text="◀" Style="{StaticResource ModText}"/></Border>
+                <StackPanel VerticalAlignment="Bottom" Margin="1,3,1,3">
+                    <Border x:Name="Key_Up" Width="45" Height="23" Margin="0,0,0,2"><TextBlock Text="▲" Style="{StaticResource ModText}"/></Border>
+                    <Border x:Name="Key_Down" Width="45" Height="23" Margin="0,2,0,0"><TextBlock Text="▼" Style="{StaticResource ModText}"/></Border>
+                </StackPanel>
+                <Border x:Name="Key_Right" Width="45" Height="25" VerticalAlignment="Bottom" Margin="1,3,3,3"><TextBlock Text="▶" Style="{StaticResource ModText}"/></Border>
+            </StackPanel>
+
+            <!-- ===================== NAV BLOCK ===================== -->
+            
+            <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" Margin="0,0,0,10">
+                <Border x:Name="Key_Snapshot" Width="50" Height="35"><TextBlock Text="print&#x0a;screen" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Scroll" Width="50" Height="35"><TextBlock Text="scroll&#x0a;lock" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Pause" Width="50" Height="35"><TextBlock Text="pause" Style="{StaticResource ModText}"/></Border>
+            </StackPanel>
+
+            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal">
+                <Border x:Name="Key_Insert" Width="50" Height="50"><TextBlock Text="insert" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Home" Width="50" Height="50"><TextBlock Text="home" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_PageUp" Width="50" Height="50"><TextBlock Text="page&#x0a;up" Style="{StaticResource ModText}"/></Border>
+            </StackPanel>
+
+            <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal">
+                <Border x:Name="Key_Delete" Width="50" Height="50"><TextBlock Text="delete" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_End" Width="50" Height="50"><TextBlock Text="end" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_PageDown" Width="50" Height="50"><TextBlock Text="page&#x0a;down" Style="{StaticResource ModText}"/></Border>
+            </StackPanel>
+
+            <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal">
+                <Border Width="50" Style="{StaticResource Gap}" Margin="3"/>
+                <Border x:Name="Key_NumLock" Width="50" Height="50"><TextBlock Text="num&#x0a;lock" Style="{StaticResource ModText}"/></Border>
+                <Border Width="50" Style="{StaticResource Gap}" Margin="3"/>
+            </StackPanel>
+        </Grid>
 
         <!-- Instructions & Close Buttons -->
-        <StackPanel Grid.Row="8" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,20">
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,30,0,10">
             <Button x:Name="BtnFail" Content="Fail (Broken Keys)" Width="180" Height="45" Background="#E74C3C" Foreground="White" Margin="0,0,20,0"/>
             <Button x:Name="BtnPass" Content="Pass (All Work)" Width="180" Height="45" Background="#2ECC71" Foreground="White" Margin="0,0,20,0"/>
             <Button x:Name="BtnClose" Content="Close (Cancel)" Width="180" Height="45" Background="#95A5A6" Foreground="White"/>
@@ -472,7 +595,7 @@ function Show-KeyboardTester {
             $kbdWindow.Close()
         })
 
-    $bgBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFrom("#2ECC71")
+    $bgBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFrom("#39FF14")
 
     $kbdWindow.Add_PreviewKeyDown({
             param($src, $e)
