@@ -5,7 +5,7 @@
 # ============================================================
 
 # --- DATA STORAGE BEGINS HERE ---
-$Global:SavedEmails = @("Technician@exxample.com")
+$Global:SavedEmails = @("Technician@example.com")
 $Global:DatabaseCSV = @"
 TechnicianEmail,SerialNumber,DurationHours,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus
 "@
@@ -1153,8 +1153,8 @@ $Global:audioTimer.Add_Tick({
 
 $window.FindName("BtnTestAudio").Add_Click({
     
-        # Automatically force unmute and set system volume to exactly 50% using Core Audio API
-        [AudioHelper]::SetVolume(50)
+        # Automatically force unmute and set system volume to exactly 25% using Core Audio API
+        [AudioHelper]::SetVolume(25)
 
         $window.FindName("BtnTestAudio").IsEnabled = $false
         $audioStatusLabel.Text = " [RECORDING] 5s... SPEAK or CLAP now! "
@@ -1396,7 +1396,7 @@ $window.FindName("ExportBtn").Add_Click({
             return
         }
     
-        $usbCheck = (Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -eq 2 } | Select-Object -First 1).DeviceID
+        $usbCheck = (Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -eq 2 -and $_.Size -gt 0 } | Select-Object -First 1).DeviceID
         $exportDir = if ($usbCheck) { $usbCheck } else { "$env:USERPROFILE\Desktop" }
     
         $savePath = "$exportDir\DQA_Output_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"
