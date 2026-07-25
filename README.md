@@ -32,6 +32,16 @@ By leveraging a custom WPF interface, inline C# execution, and deep system query
 - **Windows 10/11**
 - **PowerShell 5.1** (Run as Administrator recommended for full WMI access)
 
+### 🚀 Setup & Installation (For New Technicians)
+
+Since this script is self-contained, setup is very simple:
+1. **Download the Script:** Obtain the `DQA_GUI_v10.0.ps1` file (or clone this repository).
+2. **Unblock the File:** Right-click the `.ps1` file, select **Properties**, check the **Unblock** box at the bottom (if it exists), and click **Apply**.
+3. **Execution Policy:** If Windows prevents the script from running due to execution policies, open PowerShell as Administrator and run:
+   ```powershell
+   Set-ExecutionPolicy Bypass -Scope CurrentUser -Force
+   ```
+
 ### 🛠️ Running an Inspection
 
 1. **Launch the Application:** Right-click `DQA_GUI_v10.0.ps1` and select **Run with PowerShell**.
