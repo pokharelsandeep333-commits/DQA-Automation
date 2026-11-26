@@ -1,89 +1,119 @@
-# 🛡️ DQA Automation Suite
+<div align="center">
 
-[![PowerShell](https://img.shields.io/badge/PowerShell-5.1-blue.svg?logo=powershell)](#)
-[![WPF](https://img.shields.io/badge/UI-WPF%2FXAML-brightgreen.svg)](#)
-[![C#](https://img.shields.io/badge/Core-C%23-purple.svg?logo=csharp)](#)
-[![Status](https://img.shields.io/badge/Status-Production-success.svg)](#)
+# 🛠️ DQA Automation
 
-> **Automated Device Quality Assurance for DSU IT**
+**A portable Windows inspection tool for Dakota State University IT. Run laptop checks, record the result, and export the reviewed batch to an Excel-ready CSV from one PowerShell script.**
 
-The **DQA Automation Suite** (`DQA_GUI_v10.0.ps1`) is a highly specialized, self-contained PowerShell-driven graphical application designed to streamline hardware diagnostics and quality assurance processes for Dakota State University (DSU) IT. 
+![Windows](https://img.shields.io/badge/Platform-Windows-0078D4)
+![Windows PowerShell](https://img.shields.io/badge/Windows%20PowerShell-5.1-012456)
+![WPF and C#](https://img.shields.io/badge/Desktop-WPF%20%2B%20C%23-512BD4)
+![CSV](https://img.shields.io/badge/Export-Excel%20ready%20CSV-217346)
 
-By leveraging a custom WPF interface, inline C# execution, and deep system querying, this tool provides a rapid, reliable, and standardized method for technicians to validate laptop system health without requiring external databases or cumbersome dependencies.
+[Quick start](#quick-start) · [Inspection workflow](#inspection-workflow) · [CSV export](#dashboard-and-csv-export) · [Repository layout](#repository-layout)
 
----
-
-## ✨ Key Features
-
-- 🚀 **Zero-prompt Hardware Auto-detection:** Seamlessly scans and identifies system hardware (Network adapters, USB ports, Video ports, Touchscreens) using advanced `WMI/CIM` queries without manual input.
-- 🎵 **Inline C# Core Audio API:** Bypasses native PowerShell limitations by directly interfacing with the Windows Core Audio API to manipulate master volume, auto-unmute, and comprehensively test audio output and microphone recording.
-- 💾 **Self-modifying Persistence Engine:** Maintains an internal state by rewriting its own script logic during runtime, ensuring data persistence and technician profiles are saved without needing a SQL database or external config files.
-- ⌨️ **Custom WPF Interactive Testers:** Features bespoke, interactive XAML canvas windows for:
-  - **Keyboard Testing:** Native key-interception overlay to test every physical key.
-  - **Touchscreen Validation:** A 5-second dynamic tap challenge to verify digitizer accuracy and responsiveness.
-- 📊 **Robust Dashboard & CSV Export:** Built-in dashboard to search, filter, and edit past inspections, with secure single-click routing to export standardized CSV reports to connected USB drives.
-- 🔐 **PIN-Based Authorization:** Administrative actions (like database wipes or record deletions) are safeguarded by SHA-256 hashed PIN verification.
+</div>
 
 ---
 
-## 📖 User Guide (For Technicians)
+## At a glance
 
-### Prerequisites
-- **Windows 10/11**
-- **PowerShell 5.1** (Run as Administrator recommended for full WMI access)
+| | What DQA does |
+| --- | --- |
+| **Hardware detection** | Reads the serial number and checks charging, network connectivity, connected displays and USB devices. It adds notes for findings such as a failing drive or low battery capacity. |
+| **Guided tests** | Walks through camera, left and right speakers, microphone playback, keyboard, and touchscreen checks. Technicians can run them individually or start the sequence with **Auto-Test Hardware**. |
+| **Portable settings** | Saves sound selection, test volume, touch targets, export destination, and other preferences inside the same writable script used for inspections. |
+| **Saved history** | Shows inspection results in a searchable dashboard. A failed write keeps the current form available, and a window with older data cannot overwrite a newer save. |
+| **Batch export** | Writes the displayed rows to a unique CSV, verifies the file, then removes those rows from the dashboard. |
 
-### 🚀 Setup & Installation (For New Technicians)
+## Quick start
 
-Since this script is self-contained, setup is very simple:
-1. **Download the Script:** Obtain the `DQA_GUI_v10.0.ps1` file (or clone this repository).
-2. **Unblock the File:** Right-click the `.ps1` file, select **Properties**, check the **Unblock** box at the bottom (if it exists), and click **Apply**.
-3. **Execution Policy:** If Windows prevents the script from running due to execution policies, open PowerShell as Administrator and run:
-   ```powershell
-   Set-ExecutionPolicy Bypass -Scope CurrentUser -Force
-   ```
+Use a writable copy of [`DQA.ps1`](DQA.ps1) on Windows with **Windows PowerShell 5.1**. Right-click the file and select **Run with PowerShell**, or launch it from its folder.
 
-### 🛠️ Running an Inspection
+```powershell
+powershell.exe -NoProfile -STA -File ".\DQA.ps1"
+```
 
-1. **Launch the Application:** Right-click `DQA_GUI_v10.0.ps1` and select **Run with PowerShell**.
-2. **Technician & Serial Entry:** The tool will auto-focus the email input. Select your email or type a new one. Enter the device Serial Number.
-3. **Automated & Interactive Testing:** 
-   - Click the **"Auto-detect hardware"** button to automatically scan for external monitors and USBs.
-   - Use the **"Test Camera"**, **"Test Keyboard"**, and **"Test Touchscreen"** buttons to open interactive verification prompts.
-   - Click **"Start Audio & Mic Test"** to automatically record 5 seconds of audio and play it back to test the internal speakers and microphone simultaneously.
-4. **Cosmetic & Final Review:** Manually evaluate the physical condition (Palm Rest, Backplate, Base, Hinge) using the provided dropdowns. Use the **"Auto-fill Remaining"** button (Ctrl+A) to mark any untested standard components as "Operational".
-5. **Save & Export:** 
-   - Click **"SAVE INSPECTION"** (Ctrl+S). The dashboard will update instantly.
-   - When finished with a batch of laptops, plug in a USB drive and click **"Export to USB"** (Ctrl+E) from the Dashboard tab.
+A copy on a writable flash drive can travel between laptops with its saved settings and inspection history.
 
-### ⌨️ Keyboard Shortcuts
-- `Ctrl + 1`: Switch to Inspection Tab
-- `Ctrl + 2`: Switch to Dashboard Tab
-- `Ctrl + S`: Save Inspection
-- `Ctrl + R`: Reset Form
-- `Ctrl + E`: Export Dashboard to CSV
-- `Ctrl + F`: Focus Search Bar
-- `Ctrl + A`: Auto-fill remaining fields
+## Inspection workflow
+
+1. **Identify the inspection.** Enter or select a technician email, then press **Enter** or **Tab** to start auto-detect. Confirm the serial number and manually verify any result that was left blank. A full battery on confirmed AC power can pass the charging check.
+2. **Run the hands-on tests.** Select **Auto-Test Hardware** to follow the sequence. Listen for the left and right speaker cues, speak or clap when prompted, and tap the touchscreen targets directly on the screen.
+3. **Review the results.** Complete the remaining hardware and cosmetic fields, review the diagnostic notes, and confirm the device was wiped down. A detected drive failure counts toward a **FAILED** verdict.
+4. **Save.** Select **Save Inspection** and wait for confirmation before moving to the next laptop. Open the gear menu to change preferences. The Settings footer confirms successful automatic saves.
+
+## Dashboard and CSV export
+
+Open **Dashboard & History** to search by serial number, filter by result, or edit a saved inspection. Use the bottom scrollbar, a horizontal touchpad gesture, or **Shift + mouse wheel** to reach the rightmost columns.
+
+**Export to CSV** uses the rows currently displayed. Choose a destination in Settings, or use the default removable-drive lookup with Desktop as the fallback.
+
+| Export behavior | What to expect |
+| --- | --- |
+| **Filename** | Each batch gets a unique `DQA_Output_*.csv` name. |
+| **Format** | The established 21-column layout stays compatible with Excel and the technician submission workflow. |
+| **After a successful export** | DQA removes the verified rows from history. |
+| **After a write error** | DQA keeps the rows in history. If the CSV was already created, the error message identifies where it was saved. |
+
+Deleting a record or clearing history requires the admin PIN.
+
+## How a record moves through DQA
+
+```mermaid
+flowchart LR
+    start["Technician email"] --> detect["Background hardware checks"]
+    detect --> review["Guided tests and review"]
+    review --> save{"Inspection saved?"}
+    save -->|Yes| history["Embedded history"]
+    save -->|Write failed| review
+    history --> batch["Dashboard rows selected by search or filter"]
+    batch --> csv{"CSV written and verified?"}
+    csv -->|Yes| archive["Remove exported rows after history saves"]
+    csv -->|Write failed| history
+```
+
+The GUI is WPF, with the layout written in XAML. PowerShell handles the workflow and background CIM queries. Embedded C# handles the audio, keyboard, and horizontal scrolling integration.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+1` | Open Inspection |
+| `Ctrl+2` | Open Dashboard & History |
+| `Ctrl+S` | Save or update the inspection |
+| `Ctrl+R` | Reset the form |
+| `Ctrl+E` | Export the displayed rows |
+| `Ctrl+F` | Focus dashboard search |
+| `Ctrl+A` | Fill remaining fields when the form handles the shortcut |
+
+## Repository layout
+
+```text
+.
+├── DQA.ps1      Desktop app, hardware checks, and embedded data block
+├── README.md    Technician workflow and maintenance notes
+└── .gitignore   Root allowlist for these files
+```
+
+> [!IMPORTANT]
+> A working copy of `DQA.ps1` can contain technician emails and inspection records in its embedded data block. Review that block before adding the script to Git or distributing a fresh copy. Use a clean copy for source control. CSV exports, backups, legacy scripts, and local materials are excluded by the allowlist.
+
+## Validate the script
+
+Use Windows PowerShell 5.1 to parse the script without opening the GUI or starting hardware tests.
+
+```powershell
+$errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    (Resolve-Path -LiteralPath '.\DQA.ps1').Path, [ref]$null, [ref]$errors)
+if ($errors) { $errors; exit 1 }
+'DQA.ps1 syntax check passed.'
+```
+
+Use a separate writable copy and synthetic records when testing save or export behavior.
 
 ---
 
-## 🏗️ Technical Architecture (For Maintainers)
-
-The `DQA_GUI_v10.0.ps1` script is a monolithic, self-contained architecture that combines PowerShell, XAML, and C# to maximize deployment ease across various diagnostic environments.
-
-### 1. WPF GUI & DPI Awareness
-The graphical interface is built entirely with inline XAML loaded via `[Windows.Markup.XamlReader]::Load()`. To fix graphical blurring on high-resolution displays (common on modern laptops), the script dynamically imports `user32.dll` to call `SetProcessDPIAware()`, ensuring crisp rendering regardless of Windows scaling settings.
-
-### 2. Self-Modifying State (`Update-ScriptData`)
-To eliminate the need for an external database file that could be lost or corrupted on a diagnostic bench, the script uses a self-modifying engine. The `$Global:DatabaseCSV` and `$Global:SavedEmails` variables are hardcoded at the top of the file. When a user saves an inspection, the `Update-ScriptData` function reads the script's own source code, uses RegEx to find the data block, injects the updated CSV data, and overwrites the `.ps1` file in place.
-
-### 3. Inline C# Core Audio API Integration
-Native PowerShell cannot directly manipulate the master volume to an exact percentage or force an un-mute without third-party modules. The script embeds a C# class (`AudioHelper`) compiled at runtime via `Add-Type`. This class imports `ComImport` interfaces (`IAudioEndpointVolume`, `IMMDeviceEnumerator`) from the Windows Core Audio API, allowing the script to instantly set the system volume to 25% and unmute before executing the microphone recording test via `winmm.dll` (mciSendString).
-
-### 4. Custom Hardware Testers
-- **Keyboard Tester:** A custom XAML window that hooks into the `PreviewKeyDown` event. It intercepts `System.Windows.Input.Key` enumerations, maps them to the corresponding visual border on the screen, and turns them green (`#39FF14`). Default key behaviors (like Enter or Escape closing the window) are programmatically suppressed (`$e.Handled = $true`).
-- **Touchscreen Tester:** A dynamic `<Canvas>` element that spawns colored ellipses in random, non-overlapping coordinates. A `DispatcherTimer` enforces a strict 5-second countdown. It differentiates between standard mouse clicks and actual touch inputs using the `TouchDown` event to ensure the physical digitizer is functioning, not just the mouse cursor.
-
-### 5. Security & Authorization
-Administrative actions, such as clearing the dashboard, require a PIN. The script does not store the PIN in plain text. Instead, it compares the SHA-256 hash of the user's input against `$Global:AdminPinHash`. 
-
-*Developed for Dakota State University (DSU) IT.*
+<div align="center">
+<sub>Built for Dakota State University IT · Windows PowerShell · WPF · C#</sub>
+</div>

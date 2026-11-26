@@ -1,0 +1,5 @@
+# Allow only the app, its documentation, and the ignore rules.
+/*
+!/DQA.ps1
+!/README.md
+!/.gitignore
