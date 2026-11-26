@@ -3278,14 +3278,30 @@ function Set-DetectedPortResults($Result) {
 
 $techEmailInput.Add_LostFocus({ Start-AutoDetect })
 $techEmailInput.Add_SelectionChanged({ Start-AutoDetect })
-$techEmailInput.Add_PreviewKeyDown({
+$acceptTechnicianEmail = {
+    $serialInput.Focus() | Out-Null
+    Start-AutoDetect
+}
+# WPF can handle Enter itself when accepting a saved email. Advance in that case too.
+$techEmailInput.AddHandler(
+    [System.Windows.Input.Keyboard]::PreviewKeyDownEvent,
+    [System.Windows.Input.KeyEventHandler] {
         param($sender, $e)
-        if ($e.Key -eq "Enter" -and -not $sender.IsDropDownOpen) {
-            # Follow the same focus navigation and auto-detect path as Tab.
-            $next = [System.Windows.Input.TraversalRequest]::new([System.Windows.Input.FocusNavigationDirection]::Next)
-            $e.Handled = $sender.MoveFocus($next)
+        if ($e.Key -ne [System.Windows.Input.Key]::Return) { return }
+
+        if ($sender.IsDropDownOpen) {
+            # Let the combo box accept the highlighted email before moving focus.
+            $sender.Dispatcher.BeginInvoke(
+                [Action]$acceptTechnicianEmail, [System.Windows.Threading.DispatcherPriority]::Input
+            ) | Out-Null
         }
-    })
+        else {
+            $e.Handled = $true
+            & $acceptTechnicianEmail
+        }
+    },
+    $true
+)
 
 # ------------------------------------------------------------
 # 2. CAMERA & KEYBOARD TESTS (Interactive Prompts)
