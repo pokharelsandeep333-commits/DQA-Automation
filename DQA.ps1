@@ -1,14 +1,15 @@
-# ============================================================
-#  DQA_GUI.ps1  -  Device Quality Assurance (Automated GUI)
+﻿# ============================================================
+#  DQA.ps1  -  Device Quality Assurance (Automated GUI)
 #  DSU IT Support 
 #  Author: Sandeep Pokharel
 # ============================================================
 
 # --- DATA STORAGE BEGINS HERE ---
-$Global:SavedEmails = @("Technician@example.com", "Sandeep.Pokharel@trojans.dsu.edu")
+$Global:SavedEmails = @()
 $Global:DatabaseCSV = @'
 Index,TechnicianEmail,SerialNumber,DurationMins,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus
 '@
+$Global:AppSettingsJson = '{}'
 # --- DATA STORAGE ENDS HERE ---
 
 Add-Type -AssemblyName PresentationFramework
@@ -16,6 +17,317 @@ Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+# Shared keyboard focus cue for the app's WPF windows and dashboard menu.
+$script:DqaFocusVisual = [Windows.Markup.XamlReader]::Parse(@'
+<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Control">
+    <Setter Property="Template">
+        <Setter.Value>
+            <ControlTemplate TargetType="Control">
+                <Border BorderBrush="#00779E" BorderThickness="2" CornerRadius="5" Margin="-1"
+                        IsHitTestVisible="False" SnapsToDevicePixels="True"/>
+            </ControlTemplate>
+        </Setter.Value>
+    </Setter>
+</Style>
+'@)
+
+function Set-DqaFocusVisual([System.Windows.FrameworkElement]$Element) {
+    $Element.Resources[[System.Windows.SystemParameters]::FocusVisualStyleKey] = $script:DqaFocusVisual
+    # Some Windows themes set a focus style directly on controls such as buttons.
+    $Element.Add_PreviewGotKeyboardFocus({
+            param($sender, $e)
+            $target = $e.NewFocus -as [System.Windows.FrameworkElement]
+            if ($null -ne $target -and $null -ne $target.FocusVisualStyle) {
+                $target.SetCurrentValue([System.Windows.FrameworkElement]::FocusVisualStyleProperty, $script:DqaFocusVisual)
+            }
+        })
+}
+
+# ------------------------------------------------------------
+# DSU DIALOGS (replace the small stock Windows message boxes)
+# Large, touch-friendly buttons in DSU colors; always on top.
+# Buttons: array of @{ Text; Result; Style; IsDefault; IsCancel }
+#   Style = Primary | Secondary | Danger | Success
+# Returns the clicked button's Result, or $DefaultResult if closed with Esc.
+# ------------------------------------------------------------
+function Show-DsuDialog {
+    param(
+        [string]$Title,
+        [string]$Message,
+        [string]$Kind = "Information",   # Information | Question | Warning | Error | Success
+        [array]$Buttons,
+        [string]$DefaultResult = "Cancel",
+        [int]$Width = 420,
+        [string]$Position = "Center"      # "Bottom" keeps the middle of the screen visible (camera preview)
+    )
+
+    switch ($Kind) {
+        "Warning"  { $glyph = "&#xE7BA;"; $fg = "#8A5A00"; $bg = "#FFF4DB" }
+        "Error"    { $glyph = "&#xE783;"; $fg = "#B3261E"; $bg = "#FBE9E8" }
+        "Question" { $glyph = "&#xE9CE;"; $fg = "#00779E"; $bg = "#E6F6FC" }
+        "Success"  { $glyph = "&#xE930;"; $fg = "#1E7B3A"; $bg = "#E6F4EA" }
+        default    { $glyph = "&#xE946;"; $fg = "#00779E"; $bg = "#E6F6FC" }
+    }
+
+    $dlgXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="$Width" SizeToContent="Height" WindowStartupLocation="CenterScreen" Topmost="True" ResizeMode="NoResize"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="13" SnapsToDevicePixels="True" UseLayoutRounding="True">
+    <Window.Resources>
+        <Style x:Key="DlgBtn" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Border x:Name="ring" CornerRadius="11" BorderThickness="2" BorderBrush="Transparent" Margin="-3"/>
+                            <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.88"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.75"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="ring" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="TitleCloseX" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Width="30" Height="30" CornerRadius="15" Background="Transparent">
+                            <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#1D4E6C"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="#00A9E0"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="16">
+        <Border CornerRadius="12" Background="White">
+            <Border.Effect><DropShadowEffect BlurRadius="20" ShadowDepth="4" Direction="270" Opacity="0.30"/></Border.Effect>
+        </Border>
+        <Border CornerRadius="12" Background="White" BorderBrush="#D5D8DA" BorderThickness="1">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Border x:Name="DlgTitleBar" Grid.Row="0" Background="#003552" CornerRadius="11,11,0,0" Padding="16,6,8,6" Cursor="SizeAll">
+                    <DockPanel>
+                        <Button x:Name="DlgCloseX" DockPanel.Dock="Right" Style="{StaticResource TitleCloseX}" ToolTip="Close"/>
+                        <TextBlock x:Name="DlgTitle" Foreground="White" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
+                </Border>
+                <Border Grid.Row="1" Height="3" Background="#00A9E0"/>
+                <Grid Grid.Row="2" Margin="18,15,18,14">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <Border Width="34" Height="34" CornerRadius="17" Background="$bg" VerticalAlignment="Top" Margin="0,0,13,0">
+                        <TextBlock Text="$glyph" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="$fg" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="DlgMessage" TextWrapping="Wrap" Foreground="#1F2326" FontSize="13.5" LineHeight="19"/>
+                        <TextBlock x:Name="DlgDetail" TextWrapping="Wrap" Foreground="#5A5F66" FontSize="12.5" LineHeight="18" Margin="0,4,0,0" Visibility="Collapsed"/>
+                    </StackPanel>
+                </Grid>
+                <Border Grid.Row="3" Background="#F6F7F7" CornerRadius="0,0,11,11" BorderBrush="#E6E8E9" BorderThickness="0,1,0,0" Padding="14,9">
+                    <WrapPanel x:Name="DlgButtons" HorizontalAlignment="Right"/>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
+"@
+    $dlg = [Windows.Markup.XamlReader]::Parse($dlgXaml)
+    Set-DqaFocusVisual $dlg
+    $dlg.Title = $Title
+    $dlg.Tag = $DefaultResult
+    $dlg.FindName("DlgTitle").Text = $Title
+    # "Question`n`nExplanation": the first paragraph is shown bold, the rest in softer grey underneath
+    $msgBlock = $dlg.FindName("DlgMessage")
+    $cut = $Message.IndexOf("`n`n")
+    if ($cut -gt 0) {
+        $msgBlock.Text = $Message.Substring(0, $cut)
+        $msgBlock.FontWeight = "SemiBold"
+        $detailBlock = $dlg.FindName("DlgDetail")
+        $detailBlock.Text = $Message.Substring($cut + 2).Trim()
+        $detailBlock.Visibility = "Visible"
+    }
+    else { $msgBlock.Text = $Message }
+    $dlg.FindName("DlgCloseX").Add_Click({ param($s, $e) [System.Windows.Window]::GetWindow($s).Close() })
+    $dlg.FindName("DlgTitleBar").Add_MouseLeftButtonDown({
+            param($s, $e)
+            try { [System.Windows.Window]::GetWindow($s).DragMove() } catch { }
+        })
+
+    # Bg / text / border per button style. Main actions are filled; alternatives are white with an outline.
+    $palette = @{
+        Primary       = @("#00A9E0", "White", "#00A9E0")
+        Success       = @("#28A745", "White", "#28A745")
+        Danger        = @("#DC3545", "White", "#DC3545")
+        DangerOutline = @("White", "#C82333", "#E3A1A8")
+        Secondary     = @("White", "#1F2326", "#C5CBD3")
+    }
+    $btnPanel = $dlg.FindName("DlgButtons")
+    $defaultBtn = $null
+    foreach ($b in $Buttons) {
+        $btn = New-Object System.Windows.Controls.Button
+        $btn.Content = $b.Text
+        $btn.Style = $dlg.FindResource("DlgBtn")
+        $styleName = if ($b.Style -and $palette.ContainsKey($b.Style)) { $b.Style } else { "Secondary" }
+        $btn.Background = $palette[$styleName][0]
+        $btn.Foreground = $palette[$styleName][1]
+        $btn.BorderBrush = $palette[$styleName][2]
+        $btn.BorderThickness = 1
+        $btn.MinWidth = 84
+        $btn.Height = 34
+        $btn.Margin = "8,3,0,3"
+        $btn.Tag = $b.Result
+        if ($b.IsDefault) { $btn.IsDefault = $true; $defaultBtn = $btn }
+        if ($b.IsCancel) { $btn.IsCancel = $true }
+        $btn.Add_Click({
+                param($s, $e)
+                $w = [System.Windows.Window]::GetWindow($s)
+                $w.Tag = $s.Tag
+                $w.Close()
+            })
+        $btnPanel.Children.Add($btn) | Out-Null
+    }
+
+    if ($Position -eq "Bottom") { $dlg.WindowStartupLocation = "Manual" }
+    $dlg.Add_Loaded({
+            param($s, $e)
+            if ($Position -eq "Bottom") {
+                $area = [System.Windows.SystemParameters]::WorkArea
+                $s.Left = $area.Left + ($area.Width - $s.ActualWidth) / 2
+                $s.Top = $area.Bottom - $s.ActualHeight - 12
+            }
+            $s.Activate() | Out-Null
+            if ($defaultBtn) { $defaultBtn.Focus() | Out-Null }
+        }.GetNewClosure())
+
+    $dlg.ShowDialog() | Out-Null
+    return [string]$dlg.Tag
+}
+
+# Drop-in replacement for MessageBox::Show(text, caption, buttons, icon).
+# Returns "OK" / "Yes" / "No" / "Cancel" as strings, so existing
+# comparisons like ($res -eq "Yes") behave exactly as before.
+function Show-DsuMessage {
+    param([string]$Text, [string]$Caption = "", [string]$Buttons = "OK", [string]$Icon = "Information")
+    $kind = switch -Regex ($Icon) {
+        "Warning|Exclamation" { "Warning"; break }
+        "Error|Hand|Stop"     { "Error"; break }
+        "Question"            { "Question"; break }
+        default               { "Information" }
+    }
+    switch ($Buttons) {
+        "YesNo" {
+            $yesStyle = if ($kind -eq "Warning") { "Danger" } else { "Primary" }
+            $btns = @(
+                @{ Text = "Yes"; Result = "Yes"; Style = $yesStyle; IsDefault = $true },
+                @{ Text = "No"; Result = "No"; Style = "Secondary"; IsCancel = $true }
+            )
+            $default = "No"
+        }
+        "OKCancel" {
+            $btns = @(
+                @{ Text = "OK"; Result = "OK"; Style = "Primary"; IsDefault = $true },
+                @{ Text = "Cancel"; Result = "Cancel"; Style = "Secondary"; IsCancel = $true }
+            )
+            $default = "Cancel"
+        }
+        default {
+            $btns = @(@{ Text = "OK"; Result = "OK"; Style = "Primary"; IsDefault = $true; IsCancel = $true })
+            $default = "OK"
+        }
+    }
+    return Show-DsuDialog -Title $Caption -Message $Text -Kind $kind -Buttons $btns -DefaultResult $default
+}
+
+# Two-answer test question with custom button text, e.g. "Works" / "Broken".
+# Returns "Yes" (first button), "No" (second button) or "Cancel" (Esc).
+function Show-DsuChoice {
+    param([string]$Text, [string]$Title, [string]$YesText = "Yes", [string]$NoText = "No", [string]$Position = "Center")
+    $btns = @(
+        @{ Text = $YesText; Result = "Yes"; Style = "Success"; IsDefault = $true },
+        @{ Text = $NoText; Result = "No"; Style = "DangerOutline" }
+    )
+    return Show-DsuDialog -Title $Title -Message $Text -Kind "Question" -Buttons $btns -DefaultResult "Cancel" -Position $Position
+}
+
+# Static shim so every former MessageBox call keeps its call shape:
+#   [DsuMessageBox]::Show(text, caption, buttons, icon)
+Add-Type -TypeDefinition @"
+using System;
+public static class DsuMessageBox {
+    public static Func<string, string, string, string, string> Handler;
+    public static string Show(string text) { return Handler(text, "", "OK", "Information"); }
+    public static string Show(string text, string caption) { return Handler(text, caption, "OK", "Information"); }
+    public static string Show(string text, string caption, string buttons) { return Handler(text, caption, buttons, "Information"); }
+    public static string Show(string text, string caption, string buttons, string icon) { return Handler(text, caption, buttons, icon); }
+}
+"@ -ErrorAction SilentlyContinue
+[DsuMessageBox]::Handler = [Func[string, string, string, string, string]] {
+    param($t, $c, $b, $i)
+    [string](Show-DsuMessage -Text $t -Caption $c -Buttons $b -Icon $i)
+}
+
+# ------------------------------------------------------------
+# EXE vs PS1 DETECTION & JSON DATA LOADING
+# ------------------------------------------------------------
+$Global:IsRunningAsExe = $false
+$Global:JsonDataPath = $null
+$script:DataPath = $PSCommandPath
+$script:PersistedDataText = $MyInvocation.MyCommand.ScriptBlock.Ast.Extent.Text
+
+$exePath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+if ($exePath -and $exePath -match '\.exe$' -and $exePath -notmatch 'powershell|pwsh') {
+    $Global:IsRunningAsExe = $true
+    $exeDir = [System.IO.Path]::GetDirectoryName($exePath)
+    $Global:JsonDataPath = [System.IO.Path]::Combine($exeDir, 'DQA_NC_Data.json')
+
+    $script:DataPath = $Global:JsonDataPath
+    $script:PersistedDataText = $null
+
+    # Load saved data from JSON; if that file is damaged, fall back to the backup copy
+    foreach ($candidate in @($Global:JsonDataPath, "$($Global:JsonDataPath).bak")) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        try {
+            $text = [IO.File]::ReadAllText($candidate)
+            if ($candidate -eq $Global:JsonDataPath) { $script:PersistedDataText = $text }
+            $savedJson = $text | ConvertFrom-Json
+            if ($null -ne $savedJson.SavedEmails) {
+                $Global:SavedEmails = @($savedJson.SavedEmails)
+            }
+            if ($savedJson.DatabaseCSV) {
+                $Global:DatabaseCSV = $savedJson.DatabaseCSV
+            }
+            if ($savedJson.AppSettingsJson) {
+                $Global:AppSettingsJson = [string]$savedJson.AppSettingsJson
+            }
+            break
+        } catch {
+            # This file is corrupt: try the next one (backup), otherwise start fresh
+        }
+    }
+}
 
 # ------------------------------------------------------------
 # FORCE DPI AWARENESS (Fixes blurry graphics on laptops like Lenovo)
@@ -39,6 +351,45 @@ catch { }
 $Global:AdminPinHash = "c1f330d0aff31c1c87403f1e4347bcc21aff7c179908723535f2b31723702525"
 
 # ------------------------------------------------------------
+# APP SETTINGS (gear button in the header)
+# Saved as one JSON line inside the data block (PS1) or in
+# DQA_NC_Data.json (EXE). Files saved before Settings existed
+# have no AppSettingsJson line and simply get these defaults.
+# ------------------------------------------------------------
+$Global:AppSettingsDefaults = [ordered]@{
+    AudioVolume      = 25        # % system volume during the audio test
+    AudioSound       = "Classic chime"
+    TouchTargets     = 5         # circles in the touchscreen test
+    TouchSeconds     = 5         # time limit for the touchscreen test
+    WifiAutoConnect  = $true     # connect to Guest Wi-Fi at startup when offline
+    SaveSound        = $true     # chime when an inspection is saved
+    RememberLastTech = $true     # pre-fill the last technician email at startup
+    LastTechnician   = ""
+    ExportMode       = "Auto"    # Auto (USB, else Desktop) | Desktop | Folder
+    ExportFolder     = ""
+    SettingsSavedAt  = ""        # last successful Settings write (UTC)
+}
+
+function Initialize-AppSettings {
+    $Global:AppSettings = [ordered]@{}
+    foreach ($k in $Global:AppSettingsDefaults.Keys) { $Global:AppSettings[$k] = $Global:AppSettingsDefaults[$k] }
+    if (-not [string]::IsNullOrWhiteSpace($Global:AppSettingsJson)) {
+        try {
+            $saved = $Global:AppSettingsJson | ConvertFrom-Json
+            foreach ($prop in $saved.PSObject.Properties) {
+                if ($Global:AppSettings.Contains($prop.Name)) { $Global:AppSettings[$prop.Name] = $prop.Value }
+            }
+        }
+        catch { }   # corrupt settings line: keep the defaults
+    }
+}
+
+function Get-Setting([string]$Name) { return $Global:AppSettings[$Name] }
+
+
+Initialize-AppSettings
+
+# ------------------------------------------------------------
 # AUTO-CONNECT GUEST WIFI (IF NO INTERNET)
 # ------------------------------------------------------------
 try {
@@ -49,7 +400,8 @@ try {
         $isConnected = $true 
     }
     
-    if (-not $isConnected) {
+    # Settings > "Connect to Guest Wi-Fi at startup"
+    if (-not $isConnected -and (Get-Setting "WifiAutoConnect")) {
         $wlanProfiles = netsh wlan show profiles
         if (-not ($wlanProfiles -match "\bGuest\b")) {
             $xmlProfile = @"
@@ -90,7 +442,7 @@ try {
     }
 }
 catch {
-    [System.Windows.Forms.MessageBox]::Show("Auto-connect Wi-Fi failed: $($_.Exception.Message)", "Wi-Fi Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    [DsuMessageBox]::Show("Auto-connect Wi-Fi failed: $($_.Exception.Message)", "Wi-Fi Error", "OK", "Warning") | Out-Null
 }
 
 # ------------------------------------------------------------
@@ -111,15 +463,220 @@ public class AudioHelper {
     [DllImport("winmm.dll", EntryPoint="mciSendStringA", CharSet=CharSet.Ansi)]
     public static extern int mciSendString(string cmd, IntPtr ret, int len, IntPtr hwnd);
     
-    public static void PlayScale() {
-        int[] notes = { 523, 659, 784, 1047, 784, 659, 523 };
-        for(int i = 0; i < 5; i++) {
-            foreach (int n in notes) { Console.Beep(n, 250); }
-            System.Threading.Thread.Sleep(150);
-        }
-        Console.Beep(1000, 1000);
+    // Query version of mciSendString (returns the reply text, e.g. the live input level)
+    [DllImport("winmm.dll", EntryPoint="mciSendStringA", CharSet=CharSet.Ansi)]
+    private static extern int mciSendStringQuery(string cmd, StringBuilder ret, int len, IntPtr hwnd);
+    public static string MciQuery(string cmd) {
+        StringBuilder sb = new StringBuilder(128);
+        int r = mciSendStringQuery(cmd, sb, sb.Capacity, IntPtr.Zero);
+        return r == 0 ? sb.ToString() : "";
     }
-    public static void PlayScaleAsync() { Task.Run(() => PlayScale()); }
+
+    // Each test sound is a stereo WAV with a left-only cue first, then a right-only cue.
+    public const double ChimeSeconds = 4.0;
+    public const double LeftUntil = 1.40;
+    public static byte[] BuildChimeWav(string sound) {
+        const int rate = 44100;
+        int n = (int)(rate * ChimeSeconds);
+        double[] left = new double[n];
+        double[] right = new double[n];
+        // Each note contains its start time, frequency, decay time, and relative gain.
+        double[,] notes = {
+            { 0.00, 523.25, 0.45, 1.00 }, { 0.30, 659.25, 0.45, 1.00 },
+            { 0.60, 783.99, 0.45, 1.00 }, { 0.90, 1046.50, 0.35, 1.00 },
+            { LeftUntil, 783.99, 0.40, 0.80 }, { 1.70, 659.25, 0.40, 0.80 },
+            { 2.15, 523.25, 0.85, 0.55 }, { 2.15, 659.25, 0.85, 0.50 },
+            { 2.15, 783.99, 0.85, 0.45 }, { 2.15, 1046.50, 0.85, 0.35 }
+        };
+        double attackSeconds = 0.008;
+        double holdSeconds = 0;
+        double secondPartialRatio = 2.0;
+        double thirdPartialRatio = 3.0;
+        double secondPartialGain = 0.25;
+        double thirdPartialGain = 0.08;
+
+        switch (sound) {
+            case "Bright rise":
+                notes = new double[,] {
+                    { 0.00, 587.33, 0.16, 0.92 }, { 0.18, 739.99, 0.17, 0.82 },
+                    { 0.37, 880.00, 0.21, 0.88 }, { 0.68, 987.77, 0.47, 1.00 },
+                    { LeftUntil, 880.00, 0.17, 0.93 }, { 1.58, 739.99, 0.17, 0.86 },
+                    { 1.77, 659.25, 0.20, 0.89 }, { 2.08, 587.33, 0.55, 1.00 }
+                };
+                holdSeconds = 0.035;
+                secondPartialGain = 0.33;
+                thirdPartialGain = 0.10;
+                break;
+            case "High cascade":
+                notes = new double[,] {
+                    { 0.00, 1046.50, 0.18, 0.96 }, { 0.23, 880.00, 0.15, 0.85 },
+                    { 0.39, 783.99, 0.17, 0.84 }, { 0.58, 659.25, 0.49, 1.00 },
+                    { LeftUntil, 880.00, 0.18, 0.96 }, { 1.63, 783.99, 0.15, 0.85 },
+                    { 1.79, 659.25, 0.17, 0.84 }, { 1.98, 523.25, 0.56, 1.00 }
+                };
+                attackSeconds = 0.012;
+                secondPartialRatio = 2.20;
+                thirdPartialRatio = 3.26;
+                secondPartialGain = 0.28;
+                thirdPartialGain = 0.06;
+                break;
+            case "Major cadence":
+                notes = new double[,] {
+                    { 0.00, 587.33, 0.20, 0.94 }, { 0.24, 659.25, 0.22, 0.88 },
+                    { 0.48, 783.99, 0.26, 0.94 }, { 0.76, 880.00, 0.36, 1.00 },
+                    { LeftUntil, 783.99, 0.22, 0.98 }, { 1.66, 698.46, 0.20, 0.91 }, { 1.92, 493.88, 0.21, 0.86 },
+                    { 2.18, 523.25, 0.64, 0.80 }, { 2.18, 659.25, 0.58, 0.39 }, { 2.18, 783.99, 0.54, 0.28 }
+                };
+                attackSeconds = 0.014;
+                secondPartialGain = 0.29;
+                thirdPartialGain = 0.08;
+                break;
+            case "Echo melody":
+                notes = new double[,] {
+                    { 0.00, 523.25, 0.19, 1.00 }, { 0.37, 783.99, 0.17, 0.90 },
+                    { 0.53, 659.25, 0.16, 0.89 }, { 0.69, 783.99, 0.42, 0.95 },
+                    { LeftUntil, 587.33, 0.19, 1.00 }, { 1.77, 880.00, 0.17, 0.90 },
+                    { 1.93, 783.99, 0.16, 0.89 }, { 2.09, 698.46, 0.48, 0.95 }
+                };
+                attackSeconds = 0.016;
+                holdSeconds = 0.060;
+                secondPartialGain = 0.31;
+                thirdPartialGain = 0.07;
+                break;
+            case "Signal fanfare":
+                notes = new double[,] {
+                    { 0.00, 659.25, 0.11, 0.98 }, { 0.17, 659.25, 0.11, 0.92 },
+                    { 0.34, 880.00, 0.25, 0.96 }, { 0.70, 1108.73, 0.32, 1.00 },
+                    { LeftUntil, 739.99, 0.11, 0.98 }, { 1.57, 739.99, 0.11, 0.92 },
+                    { 1.74, 987.77, 0.25, 0.96 }, { 2.10, 880.00, 0.49, 1.00 }
+                };
+                attackSeconds = 0.010;
+                holdSeconds = 0.045;
+                secondPartialGain = 0.38;
+                thirdPartialGain = 0.12;
+                break;
+        }
+
+        for (int k = 0; k < notes.GetLength(0); k++) {
+            double start = notes[k, 0];
+            double frequency = notes[k, 1];
+            double decay = notes[k, 2];
+            double gain = notes[k, 3];
+            bool onLeft = start < LeftUntil;
+            int s0 = (int)(start * rate);
+            double[] buf = onLeft ? left : right;
+            // Fade out the left channel at the switch so the cues never overlap.
+            int stop = onLeft ? Math.Min(n, (int)(LeftUntil * rate)) : n;
+            int fadeLen = (int)(0.06 * rate);
+            for (int i = s0; i < stop; i++) {
+                double t = (i - s0) / (double)rate;
+                double attack = Math.Min(1.0, t / attackSeconds);
+                double release = Math.Max(0, t - holdSeconds);
+                double env = gain * attack * Math.Exp(-release / decay);
+                if (env < 0.0005 && t > 0.05) { break; }
+                if (onLeft && i > stop - fadeLen) { env *= (stop - i) / (double)fadeLen; }
+                double w = 2.0 * Math.PI * frequency * t;
+                double v = Math.Sin(w)
+                    + secondPartialGain * Math.Sin(secondPartialRatio * w) * Math.Exp(-t / 0.15)
+                    + thirdPartialGain * Math.Sin(thirdPartialRatio * w) * Math.Exp(-t / 0.08);
+                buf[i] += env * v;
+            }
+        }
+        double peak = 0;
+        for (int i = 0; i < n; i++) {
+            if (Math.Abs(left[i]) > peak) { peak = Math.Abs(left[i]); }
+            if (Math.Abs(right[i]) > peak) { peak = Math.Abs(right[i]); }
+        }
+        int fadeOut = (int)(0.4 * rate);
+        short[] pcm = new short[n * 2];   // interleaved L, R
+        for (int i = 0; i < n; i++) {
+            double fade = (i > n - fadeOut) ? (n - i) / (double)fadeOut : 1.0;
+            double l = (peak > 0 ? left[i] / peak : 0) * 0.8 * fade;
+            double r = (peak > 0 ? right[i] / peak : 0) * 0.8 * fade;
+            pcm[i * 2] = (short)Math.Round(l * 32767.0);
+            pcm[i * 2 + 1] = (short)Math.Round(r * 32767.0);
+        }
+        return BuildWav(pcm, rate, 2);
+    }
+
+    private static byte[] BuildWav(short[] pcm, int rate, int channels) {
+        int dataLen = pcm.Length * 2;
+        int blockAlign = channels * 2;
+        byte[] b = new byte[44 + dataLen];
+        Encoding.ASCII.GetBytes("RIFF").CopyTo(b, 0);
+        BitConverter.GetBytes(36 + dataLen).CopyTo(b, 4);
+        Encoding.ASCII.GetBytes("WAVEfmt ").CopyTo(b, 8);
+        BitConverter.GetBytes(16).CopyTo(b, 16);                  // fmt chunk size
+        BitConverter.GetBytes((short)1).CopyTo(b, 20);            // PCM
+        BitConverter.GetBytes((short)channels).CopyTo(b, 22);
+        BitConverter.GetBytes(rate).CopyTo(b, 24);
+        BitConverter.GetBytes(rate * blockAlign).CopyTo(b, 28);   // byte rate
+        BitConverter.GetBytes((short)blockAlign).CopyTo(b, 32);
+        BitConverter.GetBytes((short)16).CopyTo(b, 34);           // bits per sample
+        Encoding.ASCII.GetBytes("data").CopyTo(b, 36);
+        BitConverter.GetBytes(dataLen).CopyTo(b, 40);
+        Buffer.BlockCopy(pcm, 0, b, 44, dataLen);
+        return b;
+    }
+
+    // Cleans up the 16-bit PCM mic recording so the playback sounds smooth and clear:
+    //  - removes DC offset (the low hum/"thump" some laptop mics add)
+    //  - boosts a quiet recording (up to maxGain) based on the loud part of the speech,
+    //    so a single clap spike does not stop the voice from being boosted
+    //  - soft-limits peaks instead of hard clipping (no crackle)
+    //  - fades in the first 20 ms (no click at the start)
+    // Returns the ORIGINAL peak level (0.0 - 1.0), or -1 if the file could not be read.
+    public static double NormalizeWav(string path, double maxGain) {
+        try {
+            byte[] b = System.IO.File.ReadAllBytes(path);
+            int pos = 12, bits = 0, rate = 44100, dataPos = -1, dataLen = 0;
+            while (pos + 8 <= b.Length) {
+                string id = Encoding.ASCII.GetString(b, pos, 4);
+                int len = BitConverter.ToInt32(b, pos + 4);
+                if (id == "fmt " && pos + 8 + 16 <= b.Length) {
+                    rate = BitConverter.ToInt32(b, pos + 8 + 4);
+                    bits = BitConverter.ToInt16(b, pos + 8 + 14);
+                }
+                if (id == "data") { dataPos = pos + 8; dataLen = Math.Min(len, b.Length - dataPos); break; }
+                if (len < 0) { break; }
+                pos += 8 + len + (len % 2);
+            }
+            if (dataPos < 0 || bits != 16) { return -1; }
+            int count = dataLen / 2;
+            if (count < 2) { return -1; }
+            double[] x = new double[count];
+            double mean = 0;
+            for (int i = 0; i < count; i++) { x[i] = BitConverter.ToInt16(b, dataPos + i * 2) / 32768.0; mean += x[i]; }
+            mean /= count;
+
+            // Peak and 99.5th-percentile level (histogram of |sample| after DC removal)
+            int[] hist = new int[1024];
+            double peak = 0;
+            for (int i = 0; i < count; i++) {
+                x[i] -= mean;
+                double a = Math.Abs(x[i]);
+                if (a > peak) { peak = a; }
+                hist[Math.Min(1023, (int)(a * 1024))]++;
+            }
+            int target = (int)(count * 0.995), acc = 0, bin = 0;
+            for (bin = 0; bin < 1024; bin++) { acc += hist[bin]; if (acc >= target) { break; } }
+            double loud = Math.Max((bin + 1) / 1024.0, 1e-4);
+
+            double gain = Math.Max(1.0, Math.Min(maxGain, 0.6 / loud));
+            int fadeIn = Math.Min(count, rate / 50);
+            for (int i = 0; i < count; i++) {
+                double v = x[i] * gain;
+                double av = Math.Abs(v);
+                if (av > 0.8) { v = Math.Sign(v) * (0.8 + 0.19 * Math.Tanh((av - 0.8) / 0.19)); }
+                if (i < fadeIn) { v *= i / (double)fadeIn; }
+                short s = (short)Math.Round(Math.Max(-1.0, Math.Min(1.0, v)) * 32767.0);
+                b[dataPos + i * 2] = (byte)(s & 0xFF);
+                b[dataPos + i * 2 + 1] = (byte)((s >> 8) & 0xFF);
+            }
+            System.IO.File.WriteAllBytes(path, b);
+            return Math.Min(1.0, peak);
+        } catch { return -1; }
+    }
 
     // Core Audio API for Direct Volume Control
     [ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -175,31 +732,261 @@ public class AudioHelper {
 Add-Type -TypeDefinition $AudioCode -ErrorAction SilentlyContinue
 
 # ------------------------------------------------------------
+# KEYBOARD TESTER HOOK
+# While the keyboard tester is the window in front, every key press is captured
+# here and NOT passed on to Windows: the Windows key no longer opens Start, the
+# Copilot key no longer opens Copilot, Print Screen no longer opens the Snipping
+# Tool, Alt+Tab / Alt+F4 cannot leave or close the tester, and volume keys do not
+# change the volume. The tester reads the captured keys and lights them up.
+# The hook is removed when the tester closes (and Windows removes it if the app
+# exits). Ctrl+Alt+Del and Win+L can never be blocked - Windows protects them.
+# ------------------------------------------------------------
+if (-not ('KbdHook' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+public static class KbdHook {
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
+
+    private struct Entry { public int Vk; public int Time; }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+    private const int WH_KEYBOARD_LL = 13;
+    private const int VK_LWIN = 0x5B, VK_LSHIFT = 0xA0;
+    public const int ComboFlag = 0x10000;   // set on a key that arrived as part of a laptop action-key burst
+
+    private static IntPtr hook = IntPtr.Zero;
+    private static IntPtr target = IntPtr.Zero;
+    private static readonly LowLevelKeyboardProc proc = HookCallback;   // kept alive for the hook's lifetime
+    private static readonly List<Entry> pending = new List<Entry>();
+    private static readonly object gate = new object();
+
+    public static bool IsActive { get { return hook != IntPtr.Zero; } }
+
+    // Starts capturing; keys are only swallowed while 'window' is the foreground window
+    public static bool Start(IntPtr window) {
+        target = window;
+        if (hook != IntPtr.Zero) { return true; }
+        IntPtr mod = GetModuleHandle(Process.GetCurrentProcess().MainModule.ModuleName);
+        hook = SetWindowsHookEx(WH_KEYBOARD_LL, proc, mod, 0);
+        return hook != IntPtr.Zero;
+    }
+
+    public static void Stop() {
+        if (hook != IntPtr.Zero) { UnhookWindowsHookEx(hook); hook = IntPtr.Zero; }
+        target = IntPtr.Zero;
+        lock (gate) { pending.Clear(); }
+    }
+
+    private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+        if (nCode >= 0 && target != IntPtr.Zero && GetForegroundWindow() == target) {
+            KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+            int msg = wParam.ToInt32();
+            if (msg == 0x100 || msg == 0x104) {   // WM_KEYDOWN / WM_SYSKEYDOWN
+                lock (gate) {
+                    int vk = (int)k.vkCode;
+                    int t = (int)k.time;
+                    bool isModifier = (vk >= 0xA0 && vk <= 0xA5) || vk == VK_LWIN || vk == 0x5C;
+                    if (!isModifier) {
+                        // A laptop action key (Copilot = Win+Shift+F23, display = Win+P, ...) sends Win (+Shift) and a key
+                        // within a few milliseconds - far faster than a person can. Treat that burst as ONE key press:
+                        // drop the Win/Shift it sent and flag the key with ComboFlag.
+                        bool winBurst = pending.Exists(delegate (Entry e) { return e.Vk == VK_LWIN && unchecked(t - e.Time) < 60; });
+                        if (winBurst) {
+                            pending.RemoveAll(delegate (Entry e) { return (e.Vk == VK_LWIN || e.Vk == VK_LSHIFT) && unchecked(t - e.Time) < 200; });
+                            vk |= ComboFlag;
+                        }
+                    }
+                    Entry n; n.Vk = vk; n.Time = t;
+                    pending.Add(n);
+                }
+            }
+            return (IntPtr)1;   // swallow the key (down AND up) so Windows never acts on it
+        }
+        return CallNextHookEx(hook, nCode, wParam, lParam);
+    }
+
+    // Returns the captured keys. Win and Shift are held back ~150 ms in case they are part of an action-key burst.
+    public static int[] Drain() {
+        lock (gate) {
+            int now = Environment.TickCount;
+            List<int> ready = new List<int>();
+            List<Entry> keep = new List<Entry>();
+            foreach (Entry e in pending) {
+                bool hold = (e.Vk == VK_LWIN || e.Vk == VK_LSHIFT) && unchecked(now - e.Time) < 150;
+                if (hold) { keep.Add(e); } else { ready.Add(e.Vk); }
+            }
+            pending.Clear();
+            pending.AddRange(keep);
+            return ready.ToArray();
+        }
+    }
+}
+'@
+}
+
+# ------------------------------------------------------------
 # SELF-MODIFYING SAVE FUNCTION (Saves data inside this script)
 # ------------------------------------------------------------
-function Update-ScriptData {
-    $scriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Definition }
-    if (-not $scriptPath -or -not (Test-Path $scriptPath)) { 
-        [System.Windows.MessageBox]::Show("Could not locate script path to save data.", "Error", "OK", "Error")
-        return 
-    }
+# The lock covers the whole read/check/write operation.
+$script:DqaCsvColumns = @(
+    "Index", "TechnicianEmail", "SerialNumber", "DurationMins", "Charging", "Screen",
+    "Touchscreen", "NetworkAdapters", "Keyboard", "MouseTrackpad", "VideoPorts", "AudioOutput",
+    "Microphone", "Camera", "USBPorts", "PalmRest", "Backplate", "BaseAndVents", "Hinge", "Notes", "FinalStatus"
+)
 
+function ConvertTo-DqaDatabaseCsv($Records) {
+    $index = 0
+    $lines = $Records | ForEach-Object {
+        $row = $_ | Select-Object -Property $script:DqaCsvColumns
+        $row.Index = ++$index
+        $row
+    } | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1
+    $header = $script:DqaCsvColumns -join ','
+    if ($index -eq 0) { return $header }
+    return $header + [Environment]::NewLine + ($lines -join [Environment]::NewLine)
+}
+
+function Get-DqaRecordKey($Record) {
+    return "$($Record.Index)|$($Record.SerialNumber)"
+}
+
+function Test-DqaInspectionFailed($Record) {
+    foreach ($column in $script:DqaCsvColumns[4..18]) {
+        if ($Record.$column -in "Defective", "Needs Repair") { return $true }
+    }
+    return $Record.Notes -match '\bCHECK:\s*(?:Drive failing \(SMART\)|Storage drive unhealthy\b|(?:SSD|HDD|SCM|drive) \d+ GB[^:|\r\n]*:\s*Unhealthy - replace drive)'
+}
+
+function Write-FileSafely([string]$Path, [string]$Text, [System.Text.Encoding]$Encoding) {
+    $tmp = "$Path.$([guid]::NewGuid().ToString('N')).saving"
+    $bak = "$Path.bak"
     try {
-        $rawText = [System.IO.File]::ReadAllText($scriptPath)
-        $cleanEmails = @($Global:SavedEmails | Select-Object -Unique | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $emailItems = ($cleanEmails | ForEach-Object { '"' + $_ + '"' }) -join ", "
-        
-        $newDataBlock = "`$Global:SavedEmails = @($emailItems)`r`n`$Global:DatabaseCSV = @'`r`n$($Global:DatabaseCSV.Trim())`r`n'@"
-        
-        $regex = "(?s)(# -{3} DATA STORAGE BEGINS HERE -{3}).*?(# -{3} DATA STORAGE ENDS HERE -{3})"
-        $replacement = "`$1`r`n$newDataBlock`r`n`$2"
-        $newText = $rawText -replace $regex, $replacement
+        [IO.File]::WriteAllText($tmp, $Text, $Encoding)
+        if ([IO.File]::ReadAllText($tmp, $Encoding) -cne $Text) {
+            throw "The temporary save file could not be verified."
+        }
+        if (-not [IO.File]::Exists($Path)) {
+            [IO.File]::Move($tmp, $Path)
+            return
+        }
 
-        $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-        [System.IO.File]::WriteAllText($scriptPath, $newText, $utf8Bom)
+        try { [IO.File]::Replace($tmp, $Path, $bak) }
+        catch {
+            # Some removable drives cannot use File.Replace. Keep a backup and publish by renaming.
+            $errorCode = $_.Exception.GetBaseException().HResult -band 0xFFFF
+            if ($errorCode -notin 1, 50, 120) { throw }
+            [IO.File]::Copy($Path, $bak, $true)
+            $previous = "$tmp.previous"
+            [IO.File]::Move($Path, $previous)
+            try { [IO.File]::Move($tmp, $Path) }
+            catch {
+                [IO.File]::Move($previous, $Path)
+                throw
+            }
+            Remove-Item -LiteralPath $previous -Force -ErrorAction SilentlyContinue
+        }
     }
-    catch {
-        [System.Windows.MessageBox]::Show("Failed to save data. The file might be open or locked.`nError: $($_.Exception.Message)", "Save Error", "OK", "Error")
+    finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Update-ScriptData {
+    param(
+        [string]$DatabaseCSV = $Global:DatabaseCSV,
+        [System.Collections.IDictionary]$Settings = $Global:AppSettings,
+        [string[]]$SavedEmails = $Global:SavedEmails,
+        [scriptblock]$BeforeWrite
+    )
+
+    $dataPath = $script:DataPath
+    if ([string]::IsNullOrWhiteSpace($dataPath)) { throw "Could not locate the DQA data file." }
+    $lock = $null
+    try {
+        try {
+            $lock = [IO.FileStream]::new("$dataPath.lock", [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+        }
+        catch {
+            $errorCode = $_.Exception.GetBaseException().HResult -band 0xFFFF
+            if ($errorCode -in 32, 33) { throw "Another DQA window is saving. Try again in a moment." }
+            throw
+        }
+
+        $rawText = if ([IO.File]::Exists($dataPath)) { [IO.File]::ReadAllText($dataPath) } else { $null }
+        if (($null -eq $rawText) -ne ($null -eq $script:PersistedDataText) -or
+            ($null -ne $rawText -and -not [string]::Equals($rawText, $script:PersistedDataText, [StringComparison]::Ordinal))) {
+            throw "The DQA file changed since this window opened. Keep any unsaved inspection details and reopen the latest file before trying again."
+        }
+
+        $cleanEmails = @($SavedEmails | Select-Object -Unique | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $settingsJson = $Settings | ConvertTo-Json -Compress
+        if ($Global:IsRunningAsExe) {
+            $dataObj = @{
+                SavedEmails     = $cleanEmails
+                DatabaseCSV     = $DatabaseCSV
+                AppSettingsJson = $settingsJson
+                LastSaved       = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+            }
+            $newText = $dataObj | ConvertTo-Json -Depth 5
+        }
+        else {
+            if ($null -eq $rawText) { throw "Could not locate the script file to save data." }
+            $emailItems = ($cleanEmails | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ", "
+            $settingsLiteral = $settingsJson.Replace("'", "''")
+            $newDataBlock = "`$Global:SavedEmails = @($emailItems)`r`n`$Global:DatabaseCSV = @'`r`n$($DatabaseCSV.Trim())`r`n'@`r`n`$Global:AppSettingsJson = '$settingsLiteral'"
+            $regex = '(?ms)^(# -{3} DATA STORAGE BEGINS HERE -{3})\r?$.*?^(# -{3} DATA STORAGE ENDS HERE -{3})(?=\r?$)'
+            if ([regex]::Matches($rawText, $regex).Count -ne 1) { throw "Could not identify one embedded data block." }
+            $replacement = "`$1`r`n" + $newDataBlock.Replace('$', '$$') + "`r`n`$2"
+            $newText = $rawText -replace $regex, $replacement
+
+            $parseErrors = $null
+            [void][Management.Automation.Language.Parser]::ParseInput($newText, [ref]$null, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) { throw "The updated script did not pass its syntax check." }
+        }
+
+        if ($BeforeWrite) { & $BeforeWrite }
+        Write-FileSafely -Path $dataPath -Text $newText -Encoding ([Text.UTF8Encoding]::new($true))
+        $script:PersistedDataText = $newText
+        $Global:DatabaseCSV = $DatabaseCSV
+        $Global:AppSettings = $Settings
+        $Global:SavedEmails = $cleanEmails
+        $Global:AppSettingsJson = $settingsJson
+    }
+    finally {
+        if ($lock) { $lock.Dispose() }
+    }
+}
+
+function Write-DqaExport($Records, [string]$Path) {
+    $tmp = "$Path.$([guid]::NewGuid().ToString('N')).saving"
+    try {
+        $Records | Export-Csv -LiteralPath $tmp -NoTypeInformation -Encoding UTF8 -NoClobber -ErrorAction Stop
+        $expected = ($Records | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine
+        if ([IO.File]::ReadAllText($tmp) -cne ($expected + [Environment]::NewLine)) {
+            throw "The exported CSV could not be verified."
+        }
+        [IO.File]::Move($tmp, $Path)
+    }
+    finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -207,29 +994,135 @@ function Update-ScriptData {
 # PIN INPUT PROMPT
 # ------------------------------------------------------------
 function Get-PinInput {
-    $pinForm = New-Object System.Windows.Forms.Form
-    $pinForm.Text = "Security Verification"; $pinForm.Size = New-Object System.Drawing.Size(280, 140)
-    $pinForm.StartPosition = "CenterScreen"; $pinForm.FormBorderStyle = "FixedDialog"
-    $pinForm.MaximizeBox = $false; $pinForm.MinimizeBox = $false; $pinForm.TopMost = $true
+    # DSU-styled PIN prompt. WPF sizes itself to its content, so nothing is cut off at
+    # high display scaling (the old fixed-pixel WinForms box clipped its buttons).
+    # Returns the entered PIN, or $null when cancelled.
+    $pinXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Admin PIN" Width="350" SizeToContent="Height" WindowStartupLocation="CenterScreen" Topmost="True" ResizeMode="NoResize"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent" ShowInTaskbar="False"
+        FontFamily="Segoe UI" FontSize="14" SnapsToDevicePixels="True" UseLayoutRounding="True">
+    <Window.Resources>
+        <Style x:Key="PinBtn" TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="MinWidth" Value="84"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.88"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.75"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="bd" Property="Opacity" Value="0.45"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="PinBoxStyle" TargetType="PasswordBox">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="PasswordBox">
+                        <Border x:Name="Bd" CornerRadius="10" Background="White" BorderBrush="#C5CBD3" BorderThickness="1.5">
+                            <ScrollViewer x:Name="PART_ContentHost" Focusable="False" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/><Setter TargetName="Bd" Property="BorderThickness" Value="2"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="TitleCloseX" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Width="30" Height="30" CornerRadius="15" Background="Transparent">
+                            <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#1D4E6C"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="#00A9E0"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Grid Margin="16">
+        <Border CornerRadius="12" Background="White">
+            <Border.Effect><DropShadowEffect BlurRadius="20" ShadowDepth="4" Direction="270" Opacity="0.30"/></Border.Effect>
+        </Border>
+        <Border CornerRadius="12" Background="White" BorderBrush="#D5D8DA" BorderThickness="1">
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Border x:Name="PinTitleBar" Grid.Row="0" Background="#003552" CornerRadius="11,11,0,0" Padding="16,6,8,6" Cursor="SizeAll">
+                    <DockPanel>
+                    <Button x:Name="PinCloseX" DockPanel.Dock="Right" Style="{StaticResource TitleCloseX}" ToolTip="Cancel"/>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="#00A9E0" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <TextBlock Text="Security Verification" Foreground="White" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    </DockPanel>
+                </Border>
+                <Border Grid.Row="1" Height="3" Background="#00A9E0"/>
+                <StackPanel Grid.Row="2" Margin="24,20,24,18">
+                    <TextBlock Text="Enter the 4-digit Admin PIN to continue." Foreground="#1F2326" Margin="0,0,0,12"/>
+                    <PasswordBox x:Name="PinBox" Style="{StaticResource PinBoxStyle}" MaxLength="4" PasswordChar="&#x25CF;" FontSize="22" Height="44"/>
+                    <TextBlock x:Name="PinHint" Text="Digits only" FontSize="12" Foreground="#6C757D" Margin="0,6,0,0" HorizontalAlignment="Center"/>
+                </StackPanel>
+                <Border Grid.Row="3" Background="#F6F7F7" CornerRadius="0,0,11,11" BorderBrush="#E6E8E9" BorderThickness="0,1,0,0" Padding="14,9">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="PinCancel" Content="Cancel" Style="{StaticResource PinBtn}" Background="White" Foreground="#1F2326" BorderBrush="#C5CBD3" BorderThickness="1" IsCancel="True"/>
+                        <Button x:Name="PinVerify" Content="Verify" Style="{StaticResource PinBtn}" Background="#00A9E0" IsDefault="True" IsEnabled="False" Margin="10,0,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
+'@
+    $pinWin = [Windows.Markup.XamlReader]::Parse($pinXaml)
+    Set-DqaFocusVisual $pinWin
+    $pinBox = $pinWin.FindName("PinBox")
+    $verifyBtn = $pinWin.FindName("PinVerify")
+    $pinWin.Tag = $null
 
-    $label = New-Object System.Windows.Forms.Label
-    $label.Location = New-Object System.Drawing.Point(10, 15); $label.Size = New-Object System.Drawing.Size(240, 20); $label.Text = "Enter 4-digit PIN to authorize:"
+    # Digits only (typing and pasting); Verify is enabled once 4 digits are entered
+    $pinBox.Add_PreviewTextInput({
+            param($s, $e)
+            if ($e.Text -notmatch '^[0-9]+$') { $e.Handled = $true }
+        })
+    [System.Windows.DataObject]::AddPastingHandler($pinBox, [System.Windows.DataObjectPastingEventHandler] {
+            param($s, $e)
+            $txt = [string]$e.DataObject.GetData([System.Windows.DataFormats]::Text)
+            if ($txt -notmatch '^[0-9]+$') { $e.CancelCommand() }
+        })
+    $pinBox.Add_PasswordChanged({ $verifyBtn.IsEnabled = ($pinBox.Password.Length -eq 4) })
 
-    $textBox = New-Object System.Windows.Forms.TextBox
-    $textBox.Location = New-Object System.Drawing.Point(10, 40); $textBox.Size = New-Object System.Drawing.Size(240, 20)
-    $textBox.PasswordChar = '*'; $textBox.MaxLength = 4
+    $verifyBtn.Add_Click({
+            $pinWin.Tag = $pinBox.Password
+            $pinWin.Close()
+        })
+    $pinWin.FindName("PinCancel").Add_Click({ $pinWin.Close() })
+    $pinWin.FindName("PinCloseX").Add_Click({ $pinWin.Close() })
+    $pinWin.FindName("PinTitleBar").Add_MouseLeftButtonDown({ try { $pinWin.DragMove() } catch { } })
+    $pinWin.Add_ContentRendered({ $pinWin.Activate() | Out-Null; $pinBox.Focus() | Out-Null })
 
-    $okButton = New-Object System.Windows.Forms.Button
-    $okButton.Location = New-Object System.Drawing.Point(90, 70); $okButton.Size = New-Object System.Drawing.Size(75, 25); $okButton.Text = "Verify"; $okButton.DialogResult = "OK"
-
-    $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(175, 70); $cancelButton.Size = New-Object System.Drawing.Size(75, 25); $cancelButton.Text = "Cancel"; $cancelButton.DialogResult = "Cancel"
-
-    $pinForm.Controls.AddRange(@($label, $textBox, $okButton, $cancelButton))
-    $pinForm.AcceptButton = $okButton; $pinForm.CancelButton = $cancelButton
-    $pinForm.Add_Shown({ $textBox.Focus() })
-
-    if ($pinForm.ShowDialog() -eq "OK") { return $textBox.Text } else { return $null }
+    $pinWin.ShowDialog() | Out-Null
+    if ($null -eq $pinWin.Tag) { return $null }
+    return [string]$pinWin.Tag
 }
 
 # ------------------------------------------------------------
@@ -259,36 +1152,6 @@ function Format-TitleCaseEmail {
         else { $_ }
     }
     return ($titled -join ".") + "@" + $domain
-}
-
-# ------------------------------------------------------------
-# DELETE TECHNICIAN EMAIL DIALOG
-# ------------------------------------------------------------
-function Show-DeleteEmailDialog {
-    $delForm = New-Object System.Windows.Forms.Form
-    $delForm.Text = "Delete Technician Email"; $delForm.Size = New-Object System.Drawing.Size(380, 200)
-    $delForm.StartPosition = "CenterScreen"; $delForm.FormBorderStyle = "FixedDialog"
-    $delForm.MaximizeBox = $false; $delForm.MinimizeBox = $false; $delForm.TopMost = $true
-
-    $label = New-Object System.Windows.Forms.Label
-    $label.Location = New-Object System.Drawing.Point(10, 15); $label.Size = New-Object System.Drawing.Size(340, 20); $label.Text = "Select email to permanently remove:"
-
-    $listBox = New-Object System.Windows.Forms.ListBox
-    $listBox.Location = New-Object System.Drawing.Point(10, 40); $listBox.Size = New-Object System.Drawing.Size(340, 80)
-    foreach ($e in $Global:SavedEmails) { $listBox.Items.Add($e) | Out-Null }
-
-    $deleteBtn = New-Object System.Windows.Forms.Button
-    $deleteBtn.Location = New-Object System.Drawing.Point(100, 130); $deleteBtn.Size = New-Object System.Drawing.Size(80, 28); $deleteBtn.Text = "Delete"; $deleteBtn.DialogResult = "OK"
-
-    $cancelBtn = New-Object System.Windows.Forms.Button
-    $cancelBtn.Location = New-Object System.Drawing.Point(195, 130); $cancelBtn.Size = New-Object System.Drawing.Size(80, 28); $cancelBtn.Text = "Cancel"; $cancelBtn.DialogResult = "Cancel"
-
-    $delForm.Controls.AddRange(@($label, $listBox, $deleteBtn, $cancelBtn))
-    $delForm.AcceptButton = $deleteBtn; $delForm.CancelButton = $cancelBtn
-    $delForm.Add_Shown({ $listBox.Focus() })
-
-    if ($delForm.ShowDialog() -eq "OK" -and $listBox.SelectedItem) { return $listBox.SelectedItem }
-    return $null
 }
 
 # ------------------------------------------------------------
@@ -347,12 +1210,16 @@ function Show-KeyboardTester {
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="4">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="10" Padding="18,0">
+                            <Border.Effect><DropShadowEffect BlurRadius="10" ShadowDepth="2" Direction="270" Opacity="0.22"/></Border.Effect>
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Opacity" Value="0.85"/>
+                                <Setter TargetName="border" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.75"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -477,16 +1344,16 @@ function Show-KeyboardTester {
                 <Border x:Name="Key_RightShift" Width="114" Height="50"><TextBlock Text="shift" Style="{StaticResource ModText}" HorizontalAlignment="Right" Margin="0,0,10,0"/></Border>
             </StackPanel>
 
-            <!-- ROW 5: Spacebar & Arrows -->
+            <!-- ROW 5: laptop bottom row (fn, ctrl, windows, alt, space, alt, copilot, ctrl) & arrows -->
             <StackPanel Grid.Row="5" Grid.Column="0" Orientation="Horizontal">
-                <Border x:Name="Key_Fn" Width="50" Height="50" Style="{StaticResource DarkKey}"><TextBlock Text="fn" Style="{StaticResource DarkText}"/></Border>
-                <Border x:Name="Key_LeftCtrl" Width="55" Height="50"><TextBlock Text="control" Style="{StaticResource ModText}"/></Border>
-                <Border x:Name="Key_LeftAlt" Width="50" Height="50"><TextBlock Text="alt" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Fn" Width="50" Height="50" Background="#F4F4F4" BorderBrush="#C8C8C8" Opacity="0.75" ToolTip="Windows cannot detect the fn key itself"><TextBlock Text="fn" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_LeftCtrl" Width="55" Height="50"><TextBlock Text="ctrl" Style="{StaticResource ModText}"/></Border>
                 <Border x:Name="Key_LWin" Width="55" Height="50"><TextBlock Text="windows" Style="{StaticResource ModText}"/></Border>
-                <Border x:Name="Key_Space" Width="266" Height="50"><TextBlock Text=""/></Border>
-                <Border x:Name="Key_RWin" Width="55" Height="50"><TextBlock Text="windows" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_LeftAlt" Width="50" Height="50"><TextBlock Text="alt" Style="{StaticResource ModText}"/></Border>
+                <Border x:Name="Key_Space" Width="237" Height="50"><TextBlock Text=""/></Border>
                 <Border x:Name="Key_RightAlt" Width="50" Height="50"><TextBlock Text="alt" Style="{StaticResource ModText}"/></Border>
-                
+                <Border x:Name="Key_Copilot" Width="50" Height="50"><TextBlock Text="copilot" Style="{StaticResource ModText}" FontSize="11"/></Border>
+                <Border x:Name="Key_RightCtrl" Width="55" Height="50"><TextBlock Text="ctrl" Style="{StaticResource ModText}"/></Border>
                 <Border Width="11" Style="{StaticResource Gap}"/>
                 <!-- Arrows Block -->
                 <Border x:Name="Key_Left" Width="45" Height="25" VerticalAlignment="Bottom" Margin="3,3,1,3"><TextBlock Text="&#x25C0;" Style="{StaticResource ModText}"/></Border>
@@ -524,17 +1391,23 @@ function Show-KeyboardTester {
             </StackPanel>
         </Grid>
 
+        <!-- Fn Lock / F-row mode (judged from the last F-row key pressed) -->
+        <Border x:Name="FnModeBox" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="#F0F1F3" BorderThickness="0" CornerRadius="16" Padding="18,7" Margin="0,16,0,0">
+            <TextBlock x:Name="FnModeText" Text="Fn Lock: press any F-key to check" Foreground="#4D4F53" FontSize="14" FontWeight="SemiBold"/>
+        </Border>
+
         <!-- Instructions & Close Buttons -->
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,30,0,10">
-            <Button x:Name="BtnFail" Content="Fail (Broken Keys)" Width="180" Height="45" Background="#E74C3C" Foreground="White" Margin="0,0,20,0"/>
-            <Button x:Name="BtnPass" Content="Pass (All Work)" Width="180" Height="45" Background="#2ECC71" Foreground="White" Margin="0,0,20,0"/>
-            <Button x:Name="BtnClose" Content="Close (Cancel)" Width="180" Height="45" Background="#95A5A6" Foreground="White"/>
+            <Button x:Name="BtnFail" Width="200" Height="48" Background="#DC3545" Foreground="White" Margin="0,0,16,0"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="15" FontWeight="Normal" Foreground="White" VerticalAlignment="Center" Margin="0,0,10,0"/><TextBlock Text="Fail (Broken Keys)" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/></StackPanel></Button>
+            <Button x:Name="BtnPass" Width="200" Height="48" Background="#28A745" Foreground="White" Margin="0,0,16,0"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="15" FontWeight="Normal" Foreground="White" VerticalAlignment="Center" Margin="0,0,10,0"/><TextBlock Text="Pass (All Work)" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/></StackPanel></Button>
+            <Button x:Name="BtnClose" Width="200" Height="48" Background="#4D4F53" Foreground="White"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="15" FontWeight="Normal" Foreground="White" VerticalAlignment="Center" Margin="0,0,10,0"/><TextBlock Text="Close (Cancel)" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/></StackPanel></Button>
         </StackPanel>
     </Grid>
 </Window>
 "@
     $reader = [System.Xml.XmlNodeReader]::new([xml]$kbdXaml)
     $kbdWindow = [Windows.Markup.XamlReader]::Load($reader)
+    Set-DqaFocusVisual $kbdWindow
 
     $global:kbdResult = $null
 
@@ -554,50 +1427,68 @@ function Show-KeyboardTester {
         })
 
     $bgBrush = (New-Object System.Windows.Media.BrushConverter).ConvertFrom("#39FF14")
+    $fnMode = $kbdWindow.FindName("FnModeText")
+    $fnModeBox = $kbdWindow.FindName("FnModeBox")
+    # What to press to switch the F-row to F1-F12, for this laptop's brand
+    $maker = ""
+    try { $maker = [string](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).Manufacturer } catch { }
+    $fnSwitchTip = switch -Regex ($maker) {
+        "Dell|Lenovo" { "press Fn+Esc"; break }
+        "Microsoft" { "press the Fn key"; break }
+        default { "hold Fn or turn on Fn Lock" }
+    }
 
+    # Bottom line: which mode the F-row is in (judged from the last F-row key that arrived) and what to do
+    $setFnMode = {
+        param([bool]$FunctionKeys)
+        if ($FunctionKeys) {
+            $fnMode.Text = "Fn Lock: ON  -  F1-F12 mode"
+            $fnModeBox.Background = "#E6F4EA"; $fnMode.Foreground = "#1E7B3A"
+        }
+        else {
+            $fnMode.Text = "Fn Lock: OFF  -  Media mode  -  $fnSwitchTip to test F1-F12"
+            $fnModeBox.Background = "#FFF4DB"; $fnMode.Foreground = "#8A5A00"
+        }
+    }
+
+    # Media / action keys the F-row sends when Fn Lock is off
+    $mediaKeys = @("VolumeMute", "VolumeDown", "VolumeUp", "MediaPlayPause", "MediaNextTrack", "MediaPreviousTrack", "MediaStop",
+        "BrowserBack", "BrowserForward", "BrowserRefresh", "BrowserStop", "BrowserSearch", "BrowserFavorites", "BrowserHome",
+        "LaunchMail", "SelectMedia", "LaunchApplication1", "LaunchApplication2", "Sleep")
+
+    # An F-row key in media mode (Mute, Volume, a display-switch shortcut, ...): it lights nothing,
+    # the bottom line just switches to Media mode so the technician knows to switch to F1-F12.
+    $registerAction = {
+        param([string]$ActionId)
+        & $setFnMode $false
+    }
+
+    # Lights up one key on the drawing
+    $markKey = {
+        param([string]$keyStr)
+        if ($keyStr -match '^F([1-9]|1[0-2])$') { & $setFnMode $true }
+        if ($mediaKeys -contains $keyStr) { & $registerAction $keyStr; return }
+        $border = $kbdWindow.FindName("Key_$keyStr")
+        if (-not $border) {
+            # Duplicate WPF Key enum names (like Oem6 vs OemCloseBrackets) and special keys
+            $alias = switch ($keyStr) {
+                "Oem6" { "OemCloseBrackets" } "Oem4" { "OemOpenBrackets" } "OemPipe" { "Oem5" }
+                "OemSemicolon" { "Oem1" } "Oem7" { "OemQuotes" } "Oem2" { "OemQuestion" } "OemTilde" { "Oem3" }
+                "Prior" { "PageUp" } "Next" { "PageDown" } "PrintScreen" { "Snapshot" } "Enter" { "Return" }
+                "CapsLock" { "Capital" } "F23" { "Copilot" } "RWin" { "LWin" }
+                default { $null }
+            }
+            if ($alias) { $border = $kbdWindow.FindName("Key_$alias") }
+        }
+        if ($border) { $border.Background = $bgBrush }
+    }
+
+    # Fallback path: keys that reach the window normally (only when the hook is not active)
     $kbdWindow.Add_PreviewKeyDown({
             param($src, $e)
-        
             $keyStr = $e.Key.ToString()
-            if ($keyStr -eq "System") {
-                $keyStr = $e.SystemKey.ToString()
-            }
-
-            $borderName = "Key_$keyStr"
-            $border = $kbdWindow.FindName($borderName)
-        
-            if (-not $border) {
-                # Handle duplicate WPF Key enum names (like Oem6 vs OemCloseBrackets)
-                switch ($keyStr) {
-                    "Oem6" { $border = $kbdWindow.FindName("Key_OemCloseBrackets") }
-                    "OemCloseBrackets" { $border = $kbdWindow.FindName("Key_Oem6") }
-                    "Oem4" { $border = $kbdWindow.FindName("Key_OemOpenBrackets") }
-                    "OemOpenBrackets" { $border = $kbdWindow.FindName("Key_Oem4") }
-                    "OemPipe" { $border = $kbdWindow.FindName("Key_Oem5") }
-                    "Oem5" { $border = $kbdWindow.FindName("Key_OemPipe") }
-                    "OemSemicolon" { $border = $kbdWindow.FindName("Key_Oem1") }
-                    "Oem1" { $border = $kbdWindow.FindName("Key_OemSemicolon") }
-                    "Oem7" { $border = $kbdWindow.FindName("Key_OemQuotes") }
-                    "OemQuotes" { $border = $kbdWindow.FindName("Key_Oem7") }
-                    "Oem2" { $border = $kbdWindow.FindName("Key_OemQuestion") }
-                    "OemQuestion" { $border = $kbdWindow.FindName("Key_Oem2") }
-                    "OemTilde" { $border = $kbdWindow.FindName("Key_Oem3") }
-                    "Oem3" { $border = $kbdWindow.FindName("Key_OemTilde") }
-                    "Prior" { $border = $kbdWindow.FindName("Key_PageUp") }
-                    "PageUp" { $border = $kbdWindow.FindName("Key_Prior") }
-                    "Next" { $border = $kbdWindow.FindName("Key_PageDown") }
-                    "PageDown" { $border = $kbdWindow.FindName("Key_Next") }
-                    "PrintScreen" { $border = $kbdWindow.FindName("Key_Snapshot") }
-                    "Snapshot" { $border = $kbdWindow.FindName("Key_PrintScreen") }
-                    "Return" { $border = $kbdWindow.FindName("Key_Enter") }
-                    "Enter" { $border = $kbdWindow.FindName("Key_Return") }
-                }
-            }
-        
-            if ($border) {
-                $border.Background = $bgBrush
-            }
-
+            if ($keyStr -eq "System") { $keyStr = $e.SystemKey.ToString() }
+            & $markKey $keyStr
             # Prevent Enter, Space, Escape and System keys from doing their default behavior (like closing the window or clicking buttons)
             $e.Handled = $true
         })
@@ -607,11 +1498,34 @@ function Show-KeyboardTester {
             $e.Handled = $true
         })
 
-    # Ensure window has focus initially
-    $kbdWindow.Add_Loaded({
-            $kbdWindow.Focus()
+    # Main path: the hook captures (and blocks) keys while the tester is in front; read them every 30 ms
+    $hookTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $hookTimer.Interval = [TimeSpan]::FromMilliseconds(30)
+    $hookTimer.Add_Tick({
+            foreach ($code in [KbdHook]::Drain()) {
+                $isCombo = ($code -band [KbdHook]::ComboFlag) -ne 0
+                $vk = $code -band 0xFFFF
+                $keyStr = [System.Windows.Input.KeyInterop]::KeyFromVirtualKey($vk).ToString()
+                if ($keyStr -eq "F23") { & $markKey "F23" }                   # Copilot key
+                elseif ($isCombo) { & $registerAction "combo-$vk" }           # action key such as display switch (Win+P)
+                else { & $markKey $keyStr }
+            }
         })
 
+    $kbdWindow.Add_ContentRendered({
+            $kbdWindow.Activate() | Out-Null
+            $kbdWindow.Focus() | Out-Null
+            try {
+                $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper($kbdWindow)).Handle
+                if ([KbdHook]::Start($hwnd)) { $hookTimer.Start() }
+            }
+            catch { }
+        })
+
+    $kbdWindow.Add_Closed({
+            $hookTimer.Stop()
+            try { [KbdHook]::Stop() } catch { }
+        })
     $kbdWindow.ShowDialog() | Out-Null
     return $global:kbdResult
 }
@@ -621,29 +1535,25 @@ function Show-KeyboardTester {
 # ------------------------------------------------------------
 function Show-TouchscreenPassDialog {
     param([string]$Message)
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Touchscreen Verified"; $form.Size = New-Object System.Drawing.Size(350, 180)
-    $form.StartPosition = "CenterScreen"; $form.FormBorderStyle = "FixedDialog"
-    $form.MaximizeBox = $false; $form.MinimizeBox = $false; $form.TopMost = $true
-
-    $label = New-Object System.Windows.Forms.Label
-    $label.Location = New-Object System.Drawing.Point(20, 20); $label.Size = New-Object System.Drawing.Size(300, 70); $label.Text = $Message
-    
-    $okBtn = New-Object System.Windows.Forms.Button
-    $okBtn.Location = New-Object System.Drawing.Point(80, 95); $okBtn.Size = New-Object System.Drawing.Size(80, 28); $okBtn.Text = "OK"; $okBtn.DialogResult = "OK"
-    
-    $redoBtn = New-Object System.Windows.Forms.Button
-    $redoBtn.Location = New-Object System.Drawing.Point(175, 95); $redoBtn.Size = New-Object System.Drawing.Size(80, 28); $redoBtn.Text = "Redo"; $redoBtn.DialogResult = "Retry"
-    
-    $form.Controls.AddRange(@($label, $okBtn, $redoBtn))
-    $form.AcceptButton = $okBtn
-    return $form.ShowDialog()
+    # Large DSU-styled buttons so it is easy to tap with a finger. Returns "OK" (Pass) or "Retry" (Redo).
+    $btns = @(
+        @{ Text = "Pass"; Result = "OK"; Style = "Success"; IsDefault = $true },
+        @{ Text = "Redo"; Result = "Retry"; Style = "Secondary" }
+    )
+    return Show-DsuDialog -Title "Touchscreen Verified" -Message $Message -Kind "Success" -Buttons $btns -DefaultResult "Retry"
 }
 
 # ------------------------------------------------------------
-# NATIVE TOUCHSCREEN TESTER (5-second tap challenge)
+# NATIVE TOUCHSCREEN TESTER (tap every circle before time runs out)
+# Number of circles and time limit come from Settings (default 5 / 5 s).
+# Pass = ALL circles tapped. Result dialogs are shown only after the
+# tester window has closed: a dialog opened inside a touch event can get
+# stuck behind the topmost full-screen window and ignore finger taps.
 # ------------------------------------------------------------
 function Show-TouchscreenTester {
+    $target = [int](Get-Setting "TouchTargets"); if ($target -lt 1) { $target = 5 }
+    $seconds = [double](Get-Setting "TouchSeconds"); if ($seconds -lt 1) { $seconds = 5 }
+
     $touchXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -657,12 +1567,16 @@ function Show-TouchscreenTester {
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="4">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="10" Padding="18,0">
+                            <Border.Effect><DropShadowEffect BlurRadius="10" ShadowDepth="2" Direction="270" Opacity="0.22"/></Border.Effect>
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Opacity" Value="0.85"/>
+                                <Setter TargetName="border" Property="Opacity" Value="0.9"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Opacity" Value="0.75"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -685,59 +1599,53 @@ function Show-TouchscreenTester {
         </StackPanel>
         <Canvas x:Name="TouchCanvas" Grid.Row="1" Background="Transparent" Margin="20"/>
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,25">
-            <Button x:Name="BtnTouchFail" Content="Fail (Touch Broken)" Width="200" Height="45" Background="#E74C3C" Foreground="White" FontSize="15" Margin="0,0,20,0"/>
-            <Button x:Name="BtnTouchClose" Content="Close (Cancel)" Width="200" Height="45" Background="#95A5A6" Foreground="White" FontSize="15"/>
+            <Button x:Name="BtnTouchFail" Width="220" Height="48" Background="#DC3545" Foreground="White" Margin="0,0,16,0"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="15" FontWeight="Normal" Foreground="White" VerticalAlignment="Center" Margin="0,0,10,0"/><TextBlock Text="Fail (Touch Broken)" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/></StackPanel></Button>
+            <Button x:Name="BtnTouchClose" Width="220" Height="48" Background="#4D4F53" Foreground="White"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="15" FontWeight="Normal" Foreground="White" VerticalAlignment="Center" Margin="0,0,10,0"/><TextBlock Text="Close (Cancel)" FontSize="15" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/></StackPanel></Button>
         </StackPanel>
     </Grid>
 </Window>
 "@
     $reader = [System.Xml.XmlNodeReader]::new([xml]$touchXaml)
     $touchWindow = [Windows.Markup.XamlReader]::Load($reader)
+    Set-DqaFocusVisual $touchWindow
 
-    $global:touchResult = $null
     $global:touchCount = 0
-    $global:touchTarget = 5
+    $global:touchTarget = $target
+    $global:touchSeconds = $seconds
+    $global:touchDone = $false
+    $global:touchOutcome = $null     # AllTapped | Timeout | Defective | $null (cancelled)
     $global:touchStopwatch = $null
 
     $touchCanvas = $touchWindow.FindName("TouchCanvas")
     $touchCounterText = $touchWindow.FindName("TouchCounter")
     $touchTimerText = $touchWindow.FindName("TouchTimer")
     $touchInstructionText = $touchWindow.FindName("TouchInstruction")
+    $touchTimerText.Text = "{0:F1}s" -f $seconds
+    $touchCounterText.Text = "Tapped: 0 / $target"
 
     $circleColors = @("#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#F7DC6F", "#74B9FF")
     $brushConverter = New-Object System.Windows.Media.BrushConverter
 
-    # Timer for countdown
+    # Closes the tester shortly after it finishes, so the final message is visible for a moment
+    $closeTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $closeTimer.Interval = [TimeSpan]::FromMilliseconds(700)
+    $closeTimer.Add_Tick({ $closeTimer.Stop(); $touchWindow.Close() })
+
+    # Countdown
     $touchTickTimer = New-Object System.Windows.Threading.DispatcherTimer
     $touchTickTimer.Interval = [TimeSpan]::FromMilliseconds(100)
     $touchTickTimer.Add_Tick({
-            $elapsed = $global:touchStopwatch.Elapsed
-            $remaining = 5.0 - $elapsed.TotalSeconds
+            if ($global:touchDone) { $touchTickTimer.Stop(); return }
+            $remaining = $global:touchSeconds - $global:touchStopwatch.Elapsed.TotalSeconds
             if ($remaining -le 0) {
+                $global:touchDone = $true
+                $global:touchOutcome = "Timeout"
                 $touchTickTimer.Stop()
                 $touchTimerText.Text = "0.0s"
                 $touchInstructionText.Text = "TIME'S UP!"
                 $touchInstructionText.Foreground = $brushConverter.ConvertFrom("#E74C3C")
                 $touchCanvas.Children.Clear()
-            
-                if ($global:touchCount -ge 3) {
-                    $res = Show-TouchscreenPassDialog -Message "Hardware DETECTED AND TOUCH verified.`nYou tapped $($global:touchCount) circles."
-                    if ($res -eq "OK") {
-                        $global:touchResult = "Operational"
-                    }
-                    else {
-                        $global:touchResult = "Retry"
-                    }
-                }
-                else {
-                    $res = [System.Windows.MessageBox]::Show(
-                        "You only tapped $($global:touchCount) out of 5 circles in 5 seconds.`nDo you want to retry?",
-                        "Touchscreen Test - Failed", "YesNo", "Question"
-                    )
-                    if ($res -eq "Yes") { $global:touchResult = "Retry" }
-                    else { $global:touchResult = "Defective" }
-                }
-                $touchWindow.Close()
+                $closeTimer.Start()
             }
             else {
                 $touchTimerText.Text = "{0:F1}s" -f $remaining
@@ -745,16 +1653,44 @@ function Show-TouchscreenTester {
             }
         })
 
-    $touchWindow.FindName("BtnTouchFail").Add_Click({
+    # Only physical touch input can register a target.
+    $registerHit = {
+        param($circle)
+        if ($global:touchDone) { return }
+        if ($circle.Visibility -ne "Visible") { return }
+        $circle.Visibility = "Collapsed"
+        foreach ($child in $touchCanvas.Children) {
+            if ($child -is [System.Windows.Controls.TextBlock] -and $child.Tag -eq ($circle.Tag + "_lbl")) {
+                $child.Visibility = "Collapsed"
+            }
+        }
+        $global:touchCount++
+        $touchCounterText.Text = "Tapped: $($global:touchCount) / $($global:touchTarget)"
+        if ($global:touchCount -ge $global:touchTarget) {
+            $global:touchDone = $true
+            $global:touchOutcome = "AllTapped"
             $touchTickTimer.Stop()
-            $global:touchResult = "Defective"
+            $touchInstructionText.Text = "$([char]0x2714) ALL CIRCLES TAPPED!"
+            $touchInstructionText.Foreground = $brushConverter.ConvertFrom("#2ECC71")
+            $closeTimer.Start()
+        }
+    }
+
+    $touchWindow.FindName("BtnTouchFail").Add_Click({
+            $global:touchDone = $true
+            $global:touchOutcome = "Defective"
             $touchWindow.Close()
         })
 
     $touchWindow.FindName("BtnTouchClose").Add_Click({
-            $touchTickTimer.Stop()
-            $global:touchResult = $null
+            $global:touchDone = $true
+            $global:touchOutcome = $null
             $touchWindow.Close()
+        })
+
+    $touchWindow.Add_Closed({
+            $touchTickTimer.Stop()
+            $closeTimer.Stop()
         })
 
     $touchWindow.Add_ContentRendered({
@@ -811,51 +1747,9 @@ function Show-TouchscreenTester {
                 $numLabel.VerticalAlignment = "Center"
                 $numLabel.IsHitTestVisible = $false
 
-                $ellipse.Add_MouseLeftButtonDown({
-                        param($evtSender, $e)
-                        $evtSender.Visibility = "Collapsed"
-                        # Also hide label
-                        foreach ($child in $touchCanvas.Children) {
-                            if ($child -is [System.Windows.Controls.TextBlock] -and $child.Tag -eq ($evtSender.Tag + "_lbl")) {
-                                $child.Visibility = "Collapsed"
-                            }
-                        }
-                        $global:touchCount++
-                        $touchCounterText.Text = "Tapped: $($global:touchCount) / $($global:touchTarget)"
-                        if ($global:touchCount -ge $global:touchTarget) {
-                            $touchTickTimer.Stop()
-                            $res = Show-TouchscreenPassDialog -Message "Hardware DETECTED AND TOUCH verified."
-                            if ($res -eq "OK") {
-                                $global:touchResult = "Operational"
-                            }
-                            else {
-                                $global:touchResult = "Retry"
-                            }
-                            $touchWindow.Close()
-                        }
-                    })
-
                 $ellipse.Add_TouchDown({
                         param($evtSender, $e)
-                        $evtSender.Visibility = "Collapsed"
-                        foreach ($child in $touchCanvas.Children) {
-                            if ($child -is [System.Windows.Controls.TextBlock] -and $child.Tag -eq ($evtSender.Tag + "_lbl")) {
-                                $child.Visibility = "Collapsed"
-                            }
-                        }
-                        $global:touchCount++
-                        $touchCounterText.Text = "Tapped: $($global:touchCount) / $($global:touchTarget)"
-                        if ($global:touchCount -ge $global:touchTarget) {
-                            $touchTickTimer.Stop()
-                            $res = [System.Windows.MessageBox]::Show("Hardware DETECTED AND TOUCH verified.`n`nClick 'Yes' to accept (Pass), or 'No' to Redo.", "Touchscreen Verified", "YesNo", "Information")
-                            if ($res -eq "Yes") {
-                                $global:touchResult = "Operational"
-                            }
-                            else {
-                                $global:touchResult = "Retry"
-                            }
-                            $touchWindow.Close()
-                        }
+                        & $registerHit $evtSender
                         $e.Handled = $true
                     })
 
@@ -871,7 +1765,22 @@ function Show-TouchscreenTester {
         })
 
     $touchWindow.ShowDialog() | Out-Null
-    return $global:touchResult
+
+    # Results are asked AFTER the tester window has closed (see note above)
+    if ($global:touchOutcome -eq "AllTapped") {
+        $res = Show-TouchscreenPassDialog -Message "All $target circles tapped.`nThe touchscreen is working."
+        if ($res -eq "OK") { return "Operational" }
+        return "Retry"
+    }
+    if ($global:touchOutcome -eq "Timeout") {
+        $res = [DsuMessageBox]::Show(
+            "You tapped $($global:touchCount) of $target circles in $seconds seconds.`n`nYes = try again`nNo = mark the touchscreen Defective",
+            "Touchscreen Test - Not Completed", "YesNo", "Warning")
+        if ($res -eq "Yes") { return "Retry" }
+        return "Defective"
+    }
+    if ($global:touchOutcome -eq "Defective") { return "Defective" }
+    return $null
 }
 
 # ------------------------------------------------------------
@@ -883,10 +1792,10 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DSU IT Support - Automated DQA System" Height="780" Width="1100" WindowStartupLocation="CenterScreen" Background="#F4F4F4" FontFamily="Din Medium, Roboto, Helvetica, Arial, sans-serif">
+        Title="DSU IT Support - Automated DQA System" Height="780" Width="1100" WindowStartupLocation="CenterScreen" Background="#F0F3F6" FontFamily="Din Medium, Roboto, Helvetica, Arial, sans-serif">
     <Window.Resources>
         <DataTemplate x:Key="ColoredComboBoxTemplate">
-            <Border x:Name="bd" Padding="5,0" CornerRadius="2" HorizontalAlignment="Stretch" MinHeight="22">
+            <Border x:Name="bd" Padding="5,0" CornerRadius="4" HorizontalAlignment="Stretch" MinHeight="22">
                 <TextBlock x:Name="txt" Text="{Binding}" VerticalAlignment="Center" Foreground="Black" FontSize="13"/>
             </Border>
             <DataTemplate.Triggers>
@@ -908,10 +1817,143 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
                 </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
+        <!-- Rounded dropdowns (works for the editable Technician Email box too) -->
         <Style TargetType="ComboBox">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="ItemTemplate" Value="{StaticResource ColoredComboBoxTemplate}"/>
             <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Padding" Value="4,3,28,3"/>
+            <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+            <Setter Property="Background" Value="#F8FAFC"/>
+            <Setter Property="BorderBrush" Value="#C5CBD3"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="ToggleButton" Focusable="False" ClickMode="Press"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Bd" CornerRadius="6"
+                                                Background="{Binding Background, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                BorderThickness="{Binding BorderThickness, RelativeSource={RelativeSource AncestorType=ComboBox}}">
+                                            <Path HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,11,0" Data="M 0 0 L 4.5 4.5 L 9 0" Stroke="#4D4F53" StrokeThickness="1.6"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                                            <Trigger Property="IsChecked" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter x:Name="ContentSite" IsHitTestVisible="False" Margin="{TemplateBinding Padding}"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                            <TextBox x:Name="PART_EditableTextBox" Style="{x:Null}" FocusVisualStyle="{x:Null}" Visibility="Hidden" Margin="6,0,28,0" VerticalAlignment="Center"
+                                     Background="Transparent" BorderThickness="0" Focusable="True" FontSize="{TemplateBinding FontSize}"
+                                     IsReadOnly="{Binding IsReadOnly, RelativeSource={RelativeSource TemplatedParent}}"/>
+                            <Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                <Border Background="White" BorderBrush="#C5CBD3" BorderThickness="1" CornerRadius="6" Margin="0,3,0,0" Padding="3"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}" SnapsToDevicePixels="True">
+                                    <ScrollViewer SnapsToDevicePixels="True">
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEditable" Value="True">
+                                <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="ContentSite" Property="Visibility" Value="Hidden"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.55"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <!-- The dropdown the technician is on gets a blue border and a light blue tint -->
+                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                    <Setter Property="BorderBrush" Value="#00A9E0"/>
+                    <Setter Property="Background" Value="#EAF7FD"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <!-- Rounded rows inside the open dropdown list -->
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" CornerRadius="4" Padding="2,1" Margin="0,1" Background="Transparent">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Bd" Property="Background" Value="#E6F6FC"/></Trigger>
+                            <Trigger Property="IsSelected" Value="True"><Setter TargetName="Bd" Property="Background" Value="#D2EEF9"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Rounded text boxes -->
+        <Style TargetType="TextBox">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Background" Value="#F8FAFC"/>
+            <Setter Property="BorderBrush" Value="#C5CBD3"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="4,2"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" Focusable="False" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Bd" Property="Opacity" Value="0.55"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Rounded tabs -->
+        <!-- Tabs: both the same off-white as the page; the selected one has a DSU-blue top line and navy text -->
+        <Style TargetType="TabItem">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Grid Margin="0,0,4,0">
+                            <Border x:Name="Bd" Background="White" BorderBrush="#C5CBD3" BorderThickness="1,1,1,0" CornerRadius="8,8,0,0" Padding="14,7">
+                                <ContentPresenter x:Name="Hdr" ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" TextElement.Foreground="#6C757D"/>
+                            </Border>
+                            <Border x:Name="Accent" Height="3" VerticalAlignment="Top" CornerRadius="8,8,0,0" Background="Transparent"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Accent" Property="Background" Value="#00A9E0"/>
+                                <Setter TargetName="Bd" Property="Margin" Value="0,0,0,-1"/>
+                                <Setter TargetName="Hdr" Property="TextElement.Foreground" Value="#003552"/>
+                                <Setter Property="Panel.ZIndex" Value="1"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                    <Condition Property="IsSelected" Value="False"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="Hdr" Property="TextElement.Foreground" Value="#003552"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="Button">
             <Setter Property="Background" Value="#00a9e0"/>
@@ -923,7 +1965,7 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="4" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" CornerRadius="6" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
                         </Border>
                         <ControlTemplate.Triggers>
@@ -942,12 +1984,214 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
             </Setter>
         </Style>
         <Style x:Key="StatCardStyle" TargetType="Border">
-            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#E3E6EA"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="10"/>
             <Setter Property="Margin" Value="6"/>
-            <Setter Property="Padding" Value="15"/>
+            <Setter Property="Padding" Value="16,14"/>
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect Color="Black" Direction="270" ShadowDepth="2" BlurRadius="5" Opacity="0.15"/>
+                    <DropShadowEffect Color="Black" Direction="270" ShadowDepth="2" BlurRadius="12" Opacity="0.08"/>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Rounded page frame under the tabs -->
+        <Style TargetType="TabControl">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabControl">
+                        <Grid KeyboardNavigation.TabNavigation="Local">
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                            <TabPanel x:Name="HeaderPanel" Grid.Row="0" Panel.ZIndex="1" Margin="0" IsItemsHost="True" KeyboardNavigation.TabIndex="1" Background="Transparent"/>
+                            <Border Grid.Row="1" Background="{TemplateBinding Background}" BorderBrush="#C5CBD3" BorderThickness="1" CornerRadius="0,10,10,10" Padding="4,6,4,6" SnapsToDevicePixels="True">
+                                <ContentPresenter x:Name="PART_SelectedContentHost" ContentSource="SelectedContent"/>
+                            </Border>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Slim rounded scrollbars (no arrow buttons; drag, click the track or use the mouse wheel) -->
+        <Style x:Key="ScrollPageButton" TargetType="RepeatButton">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ScrollThumb" TargetType="Thumb">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="tb" CornerRadius="4" Background="#B8BEC4"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="tb" Property="Background" Value="#8E959C"/></Trigger>
+                            <Trigger Property="IsDragging" Value="True"><Setter TargetName="tb" Property="Background" Value="#00A9E0"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="ScrollBar">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Width" Value="12"/>
+            <Setter Property="MinWidth" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Border CornerRadius="6" Background="#EEF0F2" Margin="2,2,2,2">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageUpCommand"/></Track.DecreaseRepeatButton>
+                                <Track.Thumb><Thumb Style="{StaticResource ScrollThumb}" Margin="1"/></Track.Thumb>
+                                <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageDownCommand"/></Track.IncreaseRepeatButton>
+                            </Track>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto"/>
+                    <Setter Property="MinWidth" Value="0"/>
+                    <Setter Property="Height" Value="12"/>
+                    <Setter Property="MinHeight" Value="12"/>
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ScrollBar">
+                                <Border CornerRadius="6" Background="#EEF0F2" Margin="2,2,2,2">
+                                    <Track x:Name="PART_Track" IsDirectionReversed="False">
+                                        <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageLeftCommand"/></Track.DecreaseRepeatButton>
+                                        <Track.Thumb><Thumb Style="{StaticResource ScrollThumb}" Margin="1"/></Track.Thumb>
+                                        <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageRightCommand"/></Track.IncreaseRepeatButton>
+                                    </Track>
+                                </Border>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <!-- Dashboard table: navy header row with sort arrow; column resize grips kept -->
+        <Style x:Key="HeaderGripper" TargetType="Thumb">
+            <Setter Property="Width" Value="6"/>
+            <Setter Property="Cursor" Value="SizeWE"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb"><Border Background="Transparent"/></ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#003552"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Padding" Value="10,9,10,9"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridColumnHeader">
+                        <Grid>
+                            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="#1D4E6C" BorderThickness="0,0,1,0" Padding="{TemplateBinding Padding}">
+                                <DockPanel>
+                                    <Path x:Name="SortArrow" DockPanel.Dock="Right" Visibility="Collapsed" Width="8" Height="5" Margin="8,0,0,0"
+                                          Fill="#00A9E0" Stretch="Fill" Data="M 0 0 L 1 0 L 0.5 1 Z" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5"/>
+                                    <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" RecognizesAccessKey="False"/>
+                                </DockPanel>
+                            </Border>
+                            <Thumb x:Name="PART_LeftHeaderGripper" HorizontalAlignment="Left" Style="{StaticResource HeaderGripper}"/>
+                            <Thumb x:Name="PART_RightHeaderGripper" HorizontalAlignment="Right" Style="{StaticResource HeaderGripper}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="#0B4A6E"/></Trigger>
+                            <Trigger Property="SortDirection" Value="Ascending">
+                                <Setter TargetName="SortArrow" Property="Visibility" Value="Visible"/>
+                                <Setter TargetName="SortArrow" Property="RenderTransform"><Setter.Value><RotateTransform Angle="180"/></Setter.Value></Setter>
+                            </Trigger>
+                            <Trigger Property="SortDirection" Value="Descending">
+                                <Setter TargetName="SortArrow" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Dashboard cells: padded, vertically centred; the row colour (PASSED/FAILED) shows through -->
+        <Style TargetType="DataGridCell">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border x:Name="Bd" Background="Transparent" Padding="10,0">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="Black"/></Trigger>
+            </Style.Triggers>
+        </Style>
+        <!-- "I have wiped down the computer: YES" check box: rounded box, green fill + white check mark when ticked -->
+        <Style x:Key="WipeCheck" TargetType="CheckBox">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal" Background="Transparent">
+                            <Grid Width="24" Height="24" VerticalAlignment="Center">
+                                <Border x:Name="box" CornerRadius="6" Background="White" BorderBrush="#8E959C" BorderThickness="2"/>
+                                <Path x:Name="tick" Data="M 6 12.5 L 10.5 17 L 18.5 7.5" Stroke="White" StrokeThickness="2.6"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+                            </Grid>
+                            <ContentPresenter Margin="9,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="box" Property="BorderBrush" Value="#28A745"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="box" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="box" Property="Background" Value="#28A745"/>
+                                <Setter TargetName="box" Property="BorderBrush" Value="#28A745"/>
+                                <Setter TargetName="tick" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsChecked" Value="True"/>
+                                    <Condition Property="IsKeyboardFocused" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="box" Property="BorderBrush" Value="#00A9E0"/>
+                            </MultiTrigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Round header buttons (settings gear, timer play/pause): soft white fill on the navy header, DSU blue on hover -->
+        <Style x:Key="HeaderRoundBtn" TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bg" Background="#26FFFFFF" BorderBrush="#40FFFFFF" BorderThickness="1" CornerRadius="999">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bg" Property="Background" Value="#00A9E0"/><Setter TargetName="bg" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bg" Property="Background" Value="#0087B3"/><Setter TargetName="bg" Property="BorderBrush" Value="#0087B3"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
@@ -967,13 +2211,16 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
                     <TextBlock Text="Dakota State University - IT Support" FontSize="14" Foreground="White" Margin="0,2,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
-                    <StackPanel Orientation="Vertical" VerticalAlignment="Center" Margin="0,0,15,0">
-                        <TextBlock Text="Current Elapsed Time" FontSize="12" Foreground="White" HorizontalAlignment="Center"/>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <TextBlock x:Name="LiveTimerLabel" Text="00:00" FontWeight="Bold" FontSize="22" Foreground="#DC3545" Margin="0,0,5,0" VerticalAlignment="Center"/>
-                            <Button x:Name="PauseTimerBtn" Content="&#x25B6;" Width="26" Height="26" Background="#4d4f53" Foreground="White" FontSize="14" BorderThickness="0" ToolTip="Pause/Resume Timer" Cursor="Hand" VerticalAlignment="Center"/>
+                    <Button x:Name="SettingsBtn" Style="{StaticResource HeaderRoundBtn}" Content="&#xE713;" FontSize="17" Width="40" Height="40" Margin="0,0,16,0" ToolTip="Settings" VerticalAlignment="Center"/>
+                    <Border x:Name="InspectionTimerPanel" CornerRadius="24" Background="#1AFFFFFF" BorderBrush="#33FFFFFF" BorderThickness="1" Padding="16,5,6,5" Margin="0,0,16,0" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                <TextBlock Text="ELAPSED TIME" FontSize="10" FontWeight="SemiBold" Foreground="#9CC3D8" HorizontalAlignment="Left"/>
+                                <TextBlock x:Name="LiveTimerLabel" Text="00:00" FontWeight="Bold" FontSize="22" Foreground="#DC3545" HorizontalAlignment="Left" Margin="0,-2,0,0"/>
+                            </StackPanel>
+                            <Button x:Name="PauseTimerBtn" Style="{StaticResource HeaderRoundBtn}" Content="&#xE768;" FontSize="13" Width="36" Height="36" ToolTip="Pause/Resume Timer" VerticalAlignment="Center"/>
                         </StackPanel>
-                    </StackPanel>
+                    </Border>
                     <Image x:Name="LogoImage" Height="50" Margin="0,0,10,0" RenderOptions.BitmapScalingMode="HighQuality"/>
                 </StackPanel>
             </Grid>
@@ -996,13 +2243,15 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
                                 <TextBlock Text="System Automation" FontSize="18" FontWeight="Bold" Foreground="#003552" Margin="0,0,0,10"/>
                                 
                                 <TextBlock Text="Technician Email (Triggers Auto-Detect):" FontWeight="SemiBold"/>
-                                <ComboBox x:Name="TechEmailInput" IsEditable="True" Height="28" Margin="0,0,0,10" TabIndex="1"/>
-                                
+                                <ComboBox x:Name="TechEmailInput" IsEditable="True" Height="28" Margin="0,0,0,4" TabIndex="1"/>
+                                <TextBlock x:Name="DetectStatus" Text="Detecting hardware..." FontStyle="Italic" FontSize="12" Foreground="#00779E" Margin="0,0,0,4" Visibility="Collapsed"/>
+                                <Border Height="6"/>
+
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
                                     <TextBlock Text="Serial Number (Auto):" FontWeight="SemiBold"/>
                                 </StackPanel>
-                                <TextBox x:Name="SerialInput" Height="28" Margin="0,0,0,10" Background="#f4f4f4" TabIndex="2"/>
-                                
+                                <TextBox x:Name="SerialInput" Height="28" Margin="0,0,0,10" TabIndex="2"/>
+
                                 <TextBlock Text="Charging Status (Auto):" FontWeight="SemiBold"/><ComboBox x:Name="cbCharging" Height="28" Margin="0,0,0,10" TabIndex="3"/>
                                 <TextBlock Text="Network Adapters (Auto):" FontWeight="SemiBold"/><ComboBox x:Name="cbNetwork" Height="28" Margin="0,0,0,15" TabIndex="4"/>
 
@@ -1019,8 +2268,15 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
                                     <TextBlock Text="Audio Status:" FontWeight="SemiBold"/>
                                     <ComboBox x:Name="cbAudio" Height="28" Margin="0,0,0,5" TabIndex="8"/>
                                     <TextBlock Text="Mic Status:" FontWeight="SemiBold"/>
-                                    <ComboBox x:Name="cbMic" Height="28" Margin="0,0,0,5" TabIndex="9"/>
-                                    <TextBlock x:Name="AudioStatusLabel" Text=" " FontWeight="Bold" Margin="0,0,0,15" Height="22" Padding="5,0,5,0" VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="cbMic" Height="28" Margin="0,0,0,15" TabIndex="9"/>
+                                    <TextBlock x:Name="AudioStatusLabel" Visibility="Collapsed" FontWeight="Bold" Margin="0,0,0,4" Height="22" Padding="5,0,5,0" VerticalAlignment="Center"/>
+                                    <!-- Live mic level bar (visible only while recording) -->
+                                    <StackPanel x:Name="MicMeter" Orientation="Horizontal" Margin="0,0,0,11" Visibility="Collapsed">
+                                        <TextBlock Text="Mic level" FontSize="11" Foreground="#4D4F53" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <Border x:Name="MicMeterTrack" Width="220" Height="8" CornerRadius="4" Background="#E3E6EA" VerticalAlignment="Center">
+                                            <Border x:Name="MicMeterFill" Width="0" HorizontalAlignment="Left" CornerRadius="4" Background="#28A745"/>
+                                        </Border>
+                                    </StackPanel>
                                     
                                     <Button x:Name="BtnTestKeys" Content="3. Keyboard Web Test" Margin="0,0,0,5" Height="30" Width="200" HorizontalAlignment="Left" Background="#00A9E0" Foreground="White" FontWeight="Bold" TabIndex="12"/>
                                     <TextBlock Text="Keyboard Status:" FontWeight="SemiBold"/>
@@ -1070,14 +2326,21 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
                                 </StackPanel>
                                 <TextBox x:Name="NotesInput" Height="60" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,0,0,15" TabIndex="23"/>
                                 
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <StackPanel x:Name="AdditionalTimePanel" Orientation="Horizontal" Margin="0,0,0,10">
                                     <TextBlock Text="Additional Pre-DQA Time (mins):" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,10,0"/>
                                     <TextBox x:Name="AdditionalTimeInput" Width="60" Height="26" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" TabIndex="24"/>
+                                </StackPanel>
+                                <StackPanel x:Name="DurationCorrectionPanel" Visibility="Collapsed" Margin="0,0,0,10">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Correct total duration (min)" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,10,0"/>
+                                        <TextBox x:Name="DurationCorrectionInput" Width="80" Height="26" VerticalContentAlignment="Center" HorizontalContentAlignment="Center" AutomationProperties.Name="Correct total duration in minutes"/>
+                                    </StackPanel>
+                                    <TextBlock x:Name="SavedDurationHint" Foreground="#5A5F66" TextWrapping="Wrap" Margin="0,4,0,0"/>
                                 </StackPanel>
                                 
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,10">
                                     <TextBlock Text="I have wiped down the computer :" FontSize="16" Foreground="#003552" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                                    <CheckBox x:Name="rbWipeYes" Content="YES" Foreground="#28A745" FontWeight="Bold" FontSize="16" Margin="0,0,10,0" VerticalAlignment="Center" TabIndex="25"/>
+                                    <CheckBox x:Name="rbWipeYes" Style="{StaticResource WipeCheck}" Content="YES" Foreground="#28A745" FontWeight="Bold" FontSize="16" Margin="0,0,10,0" VerticalAlignment="Center" TabIndex="25"/>
                                 </StackPanel>
 
                                 <Button x:Name="SaveInspectionBtn" Content="SAVE INSPECTION" Height="45" FontSize="16" Margin="0,0,0,8" IsEnabled="False" Opacity="0.5" TabIndex="26"/>
@@ -1094,40 +2357,76 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <Grid Grid.Row="0" Margin="0,0,0,15">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Border Grid.Column="0" Background="#003552" Style="{StaticResource StatCardStyle}"><StackPanel><TextBlock x:Name="StatTotal" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Total Runs" Foreground="#00a9e0"/></StackPanel></Border>
-                        <Border Grid.Column="1" Background="#28A745" Style="{StaticResource StatCardStyle}"><StackPanel><TextBlock x:Name="StatPassed" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Passed" Foreground="White"/></StackPanel></Border>
-                        <Border Grid.Column="2" Background="#DC3545" Style="{StaticResource StatCardStyle}"><StackPanel><TextBlock x:Name="StatFailed" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Failed" Foreground="White"/></StackPanel></Border>
-                        <Border Grid.Column="3" Background="#003552" Style="{StaticResource StatCardStyle}"><StackPanel><TextBlock x:Name="StatAvg" FontSize="28" FontWeight="Bold" Foreground="White"/><TextBlock Text="Avg Duration (min)" Foreground="#00a9e0"/></StackPanel></Border>
+                        <Border Grid.Column="0" Style="{StaticResource StatCardStyle}"><DockPanel><Border DockPanel.Dock="Left" Width="46" Height="46" CornerRadius="23" Background="#E6EEF3" Margin="0,0,14,0" VerticalAlignment="Center"><TextBlock Text="&#xE8FD;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="#003552" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="TOTAL RUNS" FontSize="11" FontWeight="SemiBold" Foreground="#6C757D"/><TextBlock x:Name="StatTotal" FontSize="28" FontWeight="Bold" Foreground="#003552"/></StackPanel></DockPanel></Border>
+                        <Border Grid.Column="1" Style="{StaticResource StatCardStyle}"><DockPanel><Border DockPanel.Dock="Left" Width="46" Height="46" CornerRadius="23" Background="#E6F4EA" Margin="0,0,14,0" VerticalAlignment="Center"><TextBlock Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="#1E7B3A" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="PASSED" FontSize="11" FontWeight="SemiBold" Foreground="#6C757D"/><TextBlock x:Name="StatPassed" FontSize="28" FontWeight="Bold" Foreground="#1E7B3A"/></StackPanel></DockPanel></Border>
+                        <Border Grid.Column="2" Style="{StaticResource StatCardStyle}"><DockPanel><Border DockPanel.Dock="Left" Width="46" Height="46" CornerRadius="23" Background="#FBE9EA" Margin="0,0,14,0" VerticalAlignment="Center"><TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="#C82333" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="FAILED" FontSize="11" FontWeight="SemiBold" Foreground="#6C757D"/><TextBlock x:Name="StatFailed" FontSize="28" FontWeight="Bold" Foreground="#C82333"/></StackPanel></DockPanel></Border>
+                        <Border Grid.Column="3" Style="{StaticResource StatCardStyle}"><DockPanel><Border DockPanel.Dock="Left" Width="46" Height="46" CornerRadius="23" Background="#E6F6FC" Margin="0,0,14,0" VerticalAlignment="Center"><TextBlock Text="&#xE916;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="#00779E" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="AVG DURATION" FontSize="11" FontWeight="SemiBold" Foreground="#6C757D"/><StackPanel Orientation="Horizontal"><TextBlock x:Name="StatAvg" FontSize="28" FontWeight="Bold" Foreground="#00779E"/><TextBlock Text="min" FontSize="14" FontWeight="SemiBold" Foreground="#6C757D" VerticalAlignment="Bottom" Margin="5,0,0,6"/></StackPanel></StackPanel></DockPanel></Border>
                     </Grid>
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="5,0,0,10">
-                        <Grid Width="130" Height="30" Margin="0,0,10,0">
-                            <TextBox x:Name="SearchBox" Background="Transparent" VerticalContentAlignment="Center"/>
-                            <TextBlock x:Name="SearchPlaceholder" Text="Search serial..." Foreground="#747676" Margin="6,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                    <!-- Toolbar: search + filter on the left; Edit/Delete appear only when a row is selected; Export on the right.
+                         Row shortcuts: double-click or Enter = Edit, right-click = Edit/Delete menu, Delete key = Delete. Clear All lives in Settings. -->
+                    <DockPanel Grid.Row="1" Margin="5,0,5,10" LastChildFill="False">
+                        <Button x:Name="ExportBtn" DockPanel.Dock="Right" Content="Export to CSV" Width="130" Height="32" Background="#003552" Foreground="White" FontWeight="Bold" BorderThickness="0" Cursor="Hand" ToolTip="Export the records shown below (Ctrl+E)"/>
+                        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                            <!-- Search: rounded box with icon, placeholder and a clear (X) button -->
+                            <Border x:Name="SearchFrame" Width="230" Height="32" Margin="0,0,10,0" CornerRadius="8" Background="White" BorderThickness="1">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="BorderBrush" Value="#C5CBD3"/>
+                                        <Style.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                                            <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <Grid>
+                                    <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13" Foreground="#6C757D" Margin="11,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                                    <TextBox x:Name="SearchBox" Background="Transparent" BorderThickness="0" Padding="0" Margin="32,0,30,0" VerticalContentAlignment="Center" FontSize="13"/>
+                                    <TextBlock x:Name="SearchPlaceholder" Text="Search serial number..." Foreground="#8A8F95" FontSize="13" Margin="34,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                                    <Button x:Name="SearchClearBtn" Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="10" FontWeight="Normal" Width="22" Height="22" Padding="0" Margin="0,0,5,0"
+                                            HorizontalAlignment="Right" VerticalAlignment="Center" Background="#EEF0F2" Foreground="#4D4F53" Visibility="Collapsed" ToolTip="Clear search"/>
+                                </Grid>
+                            </Border>
+                            <!-- Filter: rounded dropdown with a funnel icon -->
+                            <Grid Width="150" Height="32" Margin="0,0,16,0">
+                                <ComboBox x:Name="FilterBox" Height="32" Padding="32,0,28,0" VerticalContentAlignment="Center" ToolTip="Show all, only PASSED or only FAILED">
+                                    <ComboBoxItem Content="All Results" IsSelected="True"/><ComboBoxItem Content="PASSED only"/><ComboBoxItem Content="FAILED only"/>
+                                </ComboBox>
+                                <TextBlock Text="&#xE71C;" FontFamily="Segoe MDL2 Assets" FontSize="13" Foreground="#6C757D" Margin="12,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                            </Grid>
+                            <StackPanel x:Name="RowActions" Orientation="Horizontal" Visibility="Collapsed">
+                                <Button x:Name="EditBtn" Content="Edit" Width="80" Height="32" Background="#17A2B8" Foreground="White" FontWeight="SemiBold" BorderThickness="0" Margin="0,0,8,0" Cursor="Hand" ToolTip="Edit the selected record (or double-click the row)"/>
+                                <Button x:Name="DeleteRowBtn" Content="Delete" Width="80" Height="32" Background="#FD7E14" Foreground="White" FontWeight="SemiBold" BorderThickness="0" Cursor="Hand" ToolTip="Delete the selected record (PIN required)"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </DockPanel>
+                    <!-- Rounded table: frame + a rounded mask that clips the grid (headers and row colours) to the corners -->
+                    <Border Grid.Row="2" Margin="5" CornerRadius="10" BorderBrush="#C5CBD3" BorderThickness="1" Background="White" SnapsToDevicePixels="True">
+                        <Grid>
+                            <Border x:Name="ResultsGridMask" CornerRadius="9" Background="White"/>
+                            <DataGrid x:Name="ResultsGrid" AutoGenerateColumns="True" IsReadOnly="True" Background="White" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#E3E6EA" RowHeight="32" SelectionMode="Single"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.PanningMode="Both">
+                                <DataGrid.OpacityMask>
+                                    <VisualBrush Visual="{Binding ElementName=ResultsGridMask}"/>
+                                </DataGrid.OpacityMask>
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="DataGridRow">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding FinalStatus}" Value="PASSED">
+                                                <Setter Property="Background" Value="#D4EDDA"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding FinalStatus}" Value="FAILED">
+                                                <Setter Property="Background" Value="#F8D7DA"/>
+                                            </DataTrigger>
+                                            <!-- Selected row: light DSU blue (listed last so it wins over the PASSED/FAILED colours) -->
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter Property="Background" Value="#BFE6F6"/>
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.RowStyle>
+                            </DataGrid>
                         </Grid>
-                        <ComboBox x:Name="FilterBox" Width="100" Height="30" Margin="0,0,10,0">
-                            <ComboBoxItem Content="All Results" IsSelected="True"/><ComboBoxItem Content="PASSED only"/><ComboBoxItem Content="FAILED only"/>
-                        </ComboBox>
-                        <Button x:Name="RefreshBtn" Content="Refresh Page" Width="100" Height="30" Margin="0,0,10,0"/>
-                        <Button x:Name="ExportBtn" Content="Export to CSV" Width="110" Height="30" Margin="0,0,10,0"/>
-                        <Button x:Name="EditBtn" Content="Edit Selected" Width="100" Height="30" Background="#17A2B8" Foreground="White" Margin="0,0,10,0"/>
-                        <Button x:Name="DeleteRowBtn" Content="Delete Selected" Width="110" Height="30" Background="#FD7E14" Foreground="White" Margin="0,0,10,0"/>
-                        <Button x:Name="DeleteDbBtn" Content="Clear All" Width="90" Height="30" Background="#DC3545" Foreground="White" Margin="0,0,10,0"/>
-                        <Button x:Name="DeleteEmailBtn" Content="Delete Email" Width="100" Height="30" Background="#4d4f53" Foreground="White" FontWeight="Bold" BorderThickness="0"/>
-                    </StackPanel>
-                    <DataGrid x:Name="ResultsGrid" Grid.Row="2" AutoGenerateColumns="True" IsReadOnly="True" Margin="5" Background="White">
-                        <DataGrid.RowStyle>
-                            <Style TargetType="DataGridRow">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding FinalStatus}" Value="PASSED">
-                                        <Setter Property="Background" Value="#D4EDDA"/>
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding FinalStatus}" Value="FAILED">
-                                        <Setter Property="Background" Value="#F8D7DA"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </DataGrid.RowStyle>
-                    </DataGrid>
+                    </Border>
                 </Grid>
             </TabItem>
             
@@ -1138,6 +2437,7 @@ $Global:LogoBase64 = "iVBORw0KGgoAAAANSUhEUgAAC7kAAANpCAYAAAB0Wh+qAAAACXBIWXMAAC
 
 $reader = [System.Xml.XmlNodeReader]::new($xaml)
 $window = [Windows.Markup.XamlReader]::Load($reader)
+Set-DqaFocusVisual $window
 $window.WindowState = 'Maximized'
 
 try {
@@ -1168,6 +2468,7 @@ $searchBox = $window.FindName("SearchBox")
 $searchPlaceholder = $window.FindName("SearchPlaceholder")
 $saveInspectionBtn = $window.FindName("SaveInspectionBtn")
 $additionalTimeInput = $window.FindName("AdditionalTimeInput")
+$durationCorrectionInput = $window.FindName("DurationCorrectionInput")
 $liveTimerLabel = $window.FindName("LiveTimerLabel")
 $pauseTimerBtn = $window.FindName("PauseTimerBtn")
 
@@ -1175,7 +2476,7 @@ $pauseTimerBtn.Add_Click({
         if ($Global:isTimerPaused) {
             $Global:sessionStopwatch.Start()
             $Global:isTimerPaused = $false
-            $pauseTimerBtn.Content = "$([char]0x23F8)"
+            $pauseTimerBtn.Content = "$([char]0xE769)"
             $liveTimerLabel.Foreground = "#FFC107"
         
             # Immediate UI update when resuming
@@ -1189,7 +2490,7 @@ $pauseTimerBtn.Add_Click({
         else {
             $Global:sessionStopwatch.Stop()
             $Global:isTimerPaused = $true
-            $pauseTimerBtn.Content = "$([char]0x25B6)"
+            $pauseTimerBtn.Content = "$([char]0xE768)"
             $liveTimerLabel.Foreground = "#DC3545"
             if ($null -ne $Global:uiTimer) { $Global:uiTimer.Stop() }
         }
@@ -1197,10 +2498,10 @@ $pauseTimerBtn.Add_Click({
 
 $autoResumeAction = {
     param($src, $e)
-    if ($Global:isTimerPaused) {
+    if ($null -eq $Global:EditingRecord -and $Global:isTimerPaused) {
         $Global:sessionStopwatch.Start()
         $Global:isTimerPaused = $false
-        $window.FindName("PauseTimerBtn").Content = "$([char]0x23F8)"
+        $window.FindName("PauseTimerBtn").Content = "$([char]0xE769)"
         $window.FindName("LiveTimerLabel").Foreground = "#FFC107"
         if ($null -ne $Global:uiTimer) { $Global:uiTimer.Start() }
     }
@@ -1235,7 +2536,7 @@ $tabOrder = @(
     "BtnTestKeys", "cbKeyboard", "BtnTestTouch", "cbTouch",
     "BtnAutoFill", "cbUSB", "cbVideo", "cbMouse", "cbScreen", 
     "cbPalm", "cbBackplate", "cbBase", "cbHinge", 
-    "NotesInput", "AdditionalTimeInput", "rbWipeYes", 
+    "NotesInput", "AdditionalTimeInput", "DurationCorrectionInput", "rbWipeYes",
     "SaveInspectionBtn", "ResetFormBtn"
 )
 for ($i = 0; $i -lt $tabOrder.Count; $i++) {
@@ -1246,7 +2547,7 @@ for ($i = 0; $i -lt $tabOrder.Count; $i++) {
 $bc = New-Object System.Windows.Media.BrushConverter
 $Global:redBgBrush = $bc.ConvertFrom("#F8D7DA")
 $Global:greenBgBrush = $bc.ConvertFrom("#D4EDDA")
-$Global:whiteBgBrush = $bc.ConvertFrom("#FFFFFF")
+$Global:whiteBgBrush = $bc.ConvertFrom("#F8FAFC")
 $Global:blackTextBrush = $bc.ConvertFrom("#000000")
 
 $hwBoxes = @("cbCharging", "cbScreen", "cbTouch", "cbNetwork", "cbKeyboard", "cbMouse", "cbVideo", "cbAudio", "cbMic", "cbCamera", "cbUSB")
@@ -1259,8 +2560,13 @@ foreach ($box in $cosmeticBoxes) { $window.FindName($box).ItemsSource = $cosmeti
 # ------------------------------------------------------------
 # FORM COMPLETION CHECKER (Disables Save until complete)
 # ------------------------------------------------------------
+$script:InspectionGeneration = 0
+$script:AutoDetectGeneration = $null
+$script:AutoDetectPending = 0
+$script:InspectionStorageFailure = ""
+
 function Test-FormCompletion {
-    $allFilled = $true
+    $allFilled = $script:AutoDetectPending -eq 0 -and $Global:audioState -le 0
     
     if ([string]::IsNullOrWhiteSpace($techEmailInput.Text) -or [string]::IsNullOrWhiteSpace($serialInput.Text)) { 
         $allFilled = $false 
@@ -1326,7 +2632,11 @@ function Move-ToNextEmptyComboBox {
 $window.FindName("rbWipeYes").Add_Click({ 
         Test-FormCompletion 
     })
-$techEmailInput.Add_KeyUp({ Test-FormCompletion })
+$emailTextProperty = [ComponentModel.DependencyPropertyDescriptor]::FromProperty(
+    [System.Windows.Controls.ComboBox]::TextProperty, [System.Windows.Controls.ComboBox])
+$emailTextHandler = [EventHandler]{ Test-FormCompletion }
+$emailTextProperty.AddValueChanged($techEmailInput, $emailTextHandler)
+$window.Add_Closed({ $emailTextProperty.RemoveValueChanged($techEmailInput, $emailTextHandler) })
 foreach ($box in $hwBoxes) { 
     $window.FindName($box).Add_SelectionChanged({ 
             Test-FormCompletion
@@ -1352,64 +2662,133 @@ $resultsGrid.Add_AutoGeneratingColumn({
     })
 
 # ------------------------------------------------------------
-# MANAGE RECORD DIALOG
+# DASHBOARD HORIZONTAL SCROLLING
 # ------------------------------------------------------------
-function Show-ManageRecordDialog {
-    $mngForm = New-Object System.Windows.Forms.Form
-    $mngForm.Text = "Manage Record"
-    $mngForm.Size = New-Object System.Drawing.Size(300, 140)
-    $mngForm.StartPosition = "CenterScreen"
-    $mngForm.FormBorderStyle = "FixedDialog"
-    $mngForm.MaximizeBox = $false
-    $mngForm.MinimizeBox = $false
-    $mngForm.TopMost = $true
+# WPF does not route native horizontal wheel messages as MouseWheel events.
+$dashboardScrollCode = @'
+using System;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Interop;
+using System.Windows.Threading;
 
-    $label = New-Object System.Windows.Forms.Label
-    $label.Location = New-Object System.Drawing.Point(10, 20)
-    $label.Size = New-Object System.Drawing.Size(270, 20)
-    $label.Text = "What would you like to do with the selected record ?"
+public sealed class DashboardHorizontalScroll {
+    private const int MouseWheel = 0x020A;
+    private const int MouseHorizontalWheel = 0x020E;
+    private const int ShiftModifier = 0x0004;
 
-    $editBtn = New-Object System.Windows.Forms.Button
-    $editBtn.Location = New-Object System.Drawing.Point(20, 60)
-    $editBtn.Size = New-Object System.Drawing.Size(75, 25)
-    $editBtn.Text = "Edit"
-    $editBtn.DialogResult = "Yes"
+    private readonly DataGrid grid;
+    // Keep the delegate alive with the window for the lifetime of the hook.
+    private readonly HwndSourceHook wheelHook;
+    private double? pendingOffset;
 
-    $delBtn = New-Object System.Windows.Forms.Button
-    $delBtn.Location = New-Object System.Drawing.Point(105, 60)
-    $delBtn.Size = New-Object System.Drawing.Size(75, 25)
-    $delBtn.Text = "Delete"
-    $delBtn.DialogResult = "No"
+    private DashboardHorizontalScroll(DataGrid grid) {
+        this.grid = grid;
+        this.wheelHook = OnWindowMessage;
+    }
 
-    $cancelBtn = New-Object System.Windows.Forms.Button
-    $cancelBtn.Location = New-Object System.Drawing.Point(190, 60)
-    $cancelBtn.Size = New-Object System.Drawing.Size(75, 25)
-    $cancelBtn.Text = "Cancel"
-    $cancelBtn.DialogResult = "Cancel"
+    public static void Attach(Window window, DataGrid grid) {
+        var scrolling = new DashboardHorizontalScroll(grid);
+        window.SourceInitialized += scrolling.AttachHook;
+    }
 
-    $mngForm.Controls.Add($label)
-    $mngForm.Controls.Add($editBtn)
-    $mngForm.Controls.Add($delBtn)
-    $mngForm.Controls.Add($cancelBtn)
-    $mngForm.CancelButton = $cancelBtn
+    private void AttachHook(object sender, EventArgs args) {
+        HwndSource source = PresentationSource.FromVisual((Window)sender) as HwndSource;
+        if (source != null) { source.AddHook(wheelHook); }
+    }
 
-    return $mngForm.ShowDialog()
+    private IntPtr OnWindowMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled) {
+        bool horizontal = message == MouseHorizontalWheel;
+        bool shiftWheel = message == MouseWheel && (wParam.ToInt64() & ShiftModifier) != 0;
+        if ((!horizontal && !shiftWheel) || !grid.IsVisible || !grid.IsEnabled) { return IntPtr.Zero; }
+
+        // The message coordinates are signed screen pixels, including on secondary monitors.
+        long coordinates = lParam.ToInt64();
+        Point screenPoint = new Point(unchecked((short)coordinates), unchecked((short)(coordinates >> 16)));
+        Point gridPoint = grid.PointFromScreen(screenPoint);
+        if (!new Rect(grid.RenderSize).Contains(gridPoint)) { return IntPtr.Zero; }
+
+        ScrollViewer viewer = grid.Template == null ? null : grid.Template.FindName("DG_ScrollViewer", grid) as ScrollViewer;
+        int delta = unchecked((short)(wParam.ToInt64() >> 16));
+        if (viewer == null || viewer.ScrollableWidth <= 0 || delta == 0) { return IntPtr.Zero; }
+
+        // Combine high-resolution wheel messages that arrive before WPF lays out the grid.
+        bool enqueue = !pendingOffset.HasValue;
+        double offset = pendingOffset ?? viewer.HorizontalOffset;
+        pendingOffset = Math.Max(0, Math.Min(viewer.ScrollableWidth, offset + (horizontal ? delta : -delta)));
+        if (enqueue) {
+            viewer.Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(delegate {
+                double target = pendingOffset.GetValueOrDefault();
+                pendingOffset = null;
+                if (viewer.IsVisible) { viewer.ScrollToHorizontalOffset(target); }
+            }));
+        }
+        handled = true;
+        return IntPtr.Zero;
+    }
+}
+'@
+Add-Type -TypeDefinition $dashboardScrollCode -ReferencedAssemblies @(
+    [System.Windows.Window].Assembly.Location
+    [System.Windows.Media.Visual].Assembly.Location
+    [System.Windows.Point].Assembly.Location
+    [System.Xaml.XamlReader].Assembly.Location
+)
+[DashboardHorizontalScroll]::Attach($window, $resultsGrid)
+
+# ------------------------------------------------------------
+# DASHBOARD ROW ACTIONS
+#   Select a row  -> Edit / Delete buttons appear in the toolbar
+#   Double-click or Enter -> Edit    Right-click -> Edit / Delete menu    Delete key -> Delete
+# ------------------------------------------------------------
+function Invoke-DashButton([string]$Name) {
+    $window.FindName($Name).RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Button]::ClickEvent)))
 }
 
-# ------------------------------------------------------------
-# QOL: RIGHT-CLICK TO EDIT OR DELETE
-# ------------------------------------------------------------
-$resultsGrid.Add_MouseRightButtonUp({
-        if ($resultsGrid.SelectedItem) {
-            $res = Show-ManageRecordDialog
-            if ($res -eq "Yes") {
-                $window.FindName("EditBtn").RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Button]::ClickEvent)))
-            }
-            elseif ($res -eq "No") {
-                $window.FindName("DeleteRowBtn").RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Button]::ClickEvent)))
-            }
-        }
+$resultsGrid.Add_SelectionChanged({
+        $window.FindName("RowActions").Visibility = if ($null -ne $resultsGrid.SelectedItem) { "Visible" } else { "Collapsed" }
     })
+
+# True when the mouse event happened on a data row (not the header or empty space)
+function Test-OnDataRow($OriginalSource) {
+    $node = $OriginalSource
+    while ($null -ne $node -and -not ($node -is [System.Windows.Controls.DataGridRow])) {
+        if ($node -is [System.Windows.Media.Visual] -or $node -is [System.Windows.Media.Media3D.Visual3D]) { $node = [System.Windows.Media.VisualTreeHelper]::GetParent($node) }
+        else { $node = $node.Parent }
+    }
+    return ($null -ne $node)
+}
+
+$resultsGrid.Add_MouseDoubleClick({
+        param($s, $e)
+        if ($null -ne $resultsGrid.SelectedItem -and (Test-OnDataRow $e.OriginalSource)) { Invoke-DashButton "EditBtn" }
+    })
+
+$resultsGrid.Add_PreviewKeyDown({
+        param($s, $e)
+        if ($null -eq $resultsGrid.SelectedItem) { return }
+        if ($e.Key -eq "Delete") { Invoke-DashButton "DeleteRowBtn"; $e.Handled = $true }
+        elseif ($e.Key -eq "Return") { Invoke-DashButton "EditBtn"; $e.Handled = $true }
+    })
+
+$gridMenu = New-Object System.Windows.Controls.ContextMenu
+Set-DqaFocusVisual $gridMenu
+$menuEdit = New-Object System.Windows.Controls.MenuItem
+$menuEdit.Header = "Edit record"
+$menuEdit.InputGestureText = "Double-click"
+$menuEdit.Add_Click({ Invoke-DashButton "EditBtn" })
+$menuDelete = New-Object System.Windows.Controls.MenuItem
+$menuDelete.Header = "Delete record..."
+$menuDelete.InputGestureText = "Del"
+$menuDelete.Add_Click({ Invoke-DashButton "DeleteRowBtn" })
+$gridMenu.Items.Add($menuEdit) | Out-Null
+$gridMenu.Items.Add($menuDelete) | Out-Null
+$gridMenu.Add_Opened({
+        $hasRow = ($null -ne $resultsGrid.SelectedItem)
+        $menuEdit.IsEnabled = $hasRow
+        $menuDelete.IsEnabled = $hasRow
+    })
+$resultsGrid.ContextMenu = $gridMenu
 
 # ------------------------------------------------------------
 # QOL: AUTO-UPPERCASE SERIAL NUMBER
@@ -1426,9 +2805,9 @@ $serialInput.Add_TextChanged({
         
         $isDup = $false
         if (-not [string]::IsNullOrWhiteSpace($val) -and -not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
-            $existing = @($Global:DatabaseCSV | ConvertFrom-Csv | Select-Object -ExpandProperty SerialNumber -ErrorAction SilentlyContinue)
+            $existing = @($Global:DatabaseCSV | ConvertFrom-Csv | ForEach-Object { ([string]$_.SerialNumber).Trim() })
             if ($val -in $existing) {
-                if ($null -eq $Global:EditingRecord -or $Global:EditingRecord.SerialNumber -ne $val) {
+                if ($null -eq $Global:EditingRecord -or ([string]$Global:EditingRecord.SerialNumber).Trim() -ne $val) {
                     $isDup = $true
                 }
             }
@@ -1476,173 +2855,467 @@ $notesInput.Add_TextChanged({
 $searchBox.Add_TextChanged({
         if ($searchBox.Text.Length -gt 0) {
             $searchPlaceholder.Visibility = "Hidden"
+            $window.FindName("SearchClearBtn").Visibility = "Visible"
             $window.FindName("FilterBox").SelectedIndex = 0
         }
         else {
             $searchPlaceholder.Visibility = "Visible"
+            $window.FindName("SearchClearBtn").Visibility = "Collapsed"
         }
         Update-Dashboard
     })
+$window.FindName("SearchClearBtn").Add_Click({
+        $searchBox.Text = ""
+        $searchBox.Focus() | Out-Null
+    })
+
+# ------------------------------------------------------------
+# BACKGROUND WORK (keeps the window responsive)
+# Hardware queries (CIM/WMI) can take several seconds. They used to run on
+# the UI thread and froze the window; they now run in a small background
+# runspace pool and the results are applied on the UI thread.
+# ------------------------------------------------------------
+$Global:BgPool = [runspacefactory]::CreateRunspacePool(1, 4)
+$Global:BgPool.Open()
+$Global:BgJobs = New-Object System.Collections.ArrayList
+$Global:BgJobTimer = New-Object System.Windows.Threading.DispatcherTimer
+$Global:BgJobTimer.Interval = [TimeSpan]::FromMilliseconds(150)
+$Global:BgJobTimer.Add_Tick({
+        foreach ($job in @($Global:BgJobs)) {
+            if (-not $job.Handle.IsCompleted) { continue }
+            $Global:BgJobs.Remove($job) | Out-Null
+            $result = $null
+            try { $result = @($job.PS.EndInvoke($job.Handle))[0] } catch { }
+            $job.PS.Dispose()
+            try { & $job.OnDone $result $job.Context } catch { }
+        }
+        if ($Global:BgJobs.Count -eq 0) { $Global:BgJobTimer.Stop() }
+    })
+
+function Start-BackgroundWork([scriptblock]$Work, [scriptblock]$OnDone, $Context) {
+    $ps = [powershell]::Create()
+    try {
+        $ps.RunspacePool = $Global:BgPool
+        $ps.AddScript($Work.ToString()) | Out-Null
+        $job = @{ PS = $ps; Handle = $ps.BeginInvoke(); OnDone = $OnDone; Context = $Context }
+    }
+    catch {
+        $ps.Dispose()
+        & $OnDone $null $Context
+        return
+    }
+    $Global:BgJobs.Add($job) | Out-Null
+    $Global:BgJobTimer.Start()
+}
+
+# Adds one short bullet line to the Notes box (never the same line twice).
+# Callers write "- text"; the dash is shown as a bullet point (U+2022, built at runtime so
+# this file stays plain ASCII). Lines that need attention read "CHECK: ...".
+$Global:NoteBullet = [string][char]0x2022
+function Add-AutoNote([string]$Line, [switch]$First) {
+    if ($Line.StartsWith("- ")) { $Line = $Global:NoteBullet + " " + $Line.Substring(2) }
+    $current = $notesInput.Text.TrimEnd()
+    if ($current.Contains($Line)) { return }
+    $notesInput.Text = if ($current.Length -eq 0) { $Line }
+        elseif ($First) { $Line + "`r`n" + $current }
+        else { $current + "`r`n" + $Line }
+}
+
+# Quick part: serial and charging (usually well under a second)
+$Global:AutoDetectQuickWork = {
+    $r = @{ Serial = "UNKNOWN"; Charging = $null }
+    try { $r.Serial = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber.Trim() } catch { $r.Serial = "UNKNOWN" }
+    try {
+        $batteries = @(Get-CimInstance -ClassName Win32_Battery -ErrorAction Stop)
+        if ($batteries.Count -eq 0) { $r.Charging = "Not Applicable" }
+        else {
+            $unconfirmed = @($batteries | Where-Object { $_.BatteryStatus -notin 3, 6, 7, 8, 9 })
+            # A full battery can report status 2 when the charge controller is idle on AC.
+            if ($unconfirmed.Count -eq 0 -or
+                (@($unconfirmed | Where-Object { $_.BatteryStatus -ne 2 -or $_.EstimatedChargeRemaining -ne 100 }).Count -eq 0 -and
+                    [System.Windows.Forms.SystemInformation]::PowerStatus.PowerLineStatus -eq "Online")) {
+                $r.Charging = "Operational"
+            }
+        }
+    }
+    catch { }
+    return $r
+}
+
+# Network: an adapter being "up" is not enough - check the laptop can really reach the internet.
+# Uses the same test page Windows itself uses (Microsoft's connectivity check); nothing is sent.
+# Tries 3 times over ~10 s, because the Guest Wi-Fi may still be connecting right after startup.
+$Global:NetCheckWork = {
+    $r = @{ AdapterUp = $null; Internet = $false; Problem = "" }
+    try {
+        # Same data as Get-NetAdapter (Status Up, hidden adapters excluded) without loading the slow NetAdapter module
+        $adapters = Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetAdapter -Filter "InterfaceOperationalStatus=1 AND Hidden=FALSE" -ErrorAction Stop
+        $r.AdapterUp = [bool]$adapters
+    }
+    catch { $r.AdapterUp = $null }
+    if (-not $r.AdapterUp) { return $r }
+
+    for ($i = 0; $i -lt 3 -and -not $r.Internet; $i++) {
+        if ($i -gt 0) { Start-Sleep -Seconds 4 }
+        try {
+            $req = [System.Net.HttpWebRequest]::Create("http://www.msftconnecttest.com/connecttest.txt")
+            $req.Timeout = 4000
+            $req.ReadWriteTimeout = 4000
+            $req.AllowAutoRedirect = $false   # a Wi-Fi sign-in page redirects instead of answering
+            $resp = $req.GetResponse()
+            $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
+            $body = $reader.ReadToEnd()
+            $resp.Close()
+            if ($body.Trim() -eq "Microsoft Connect Test") { $r.Internet = $true; $r.Problem = "" }
+            else { $r.Problem = "signin" }
+        }
+        catch { $r.Problem = "unreachable" }
+    }
+    return $r
+}
+
+# Deep part: monitors, USB, camera/audio presence, battery health, device errors, drive health
+$Global:AutoDetectWork = {
+    $r = @{ VideoOK = $false; UsbOK = $false; Notes = @(); StorageFailure = ""; BatteryHealth = $null; FullMWh = 0; DesignMWh = 0; CycleCount = 0 }
+
+    # External monitor (PNPClass 'Monitor' is the most reliable for HDMI detection)
+    try {
+        $pnpMonitors = Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Monitor' AND ConfigManagerErrorCode=0" -ErrorAction SilentlyContinue
+        $r.VideoOK = (@($pnpMonitors).Count -gt 1)
+    }
+    catch { }
+
+    $pnpDevices = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue)
+
+    # USB flash drive (USBSTOR) or USB mouse/keyboard (mouhid/kbdhid) with a VID/PID, or a removable disk
+    try {
+        $externalUsbDevices = $pnpDevices | Where-Object { ($_.Service -match 'mouhid|kbdhid|USBSTOR') -and ($_.DeviceID -match 'VID_[0-9A-F]+&PID_') }
+        $usbLogical = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2" -ErrorAction SilentlyContinue
+        $r.UsbOK = [bool]($externalUsbDevices -or $usbLogical)
+    }
+    catch { }
+
+    # Camera & audio hardware presence
+    try {
+        $cam = $pnpDevices | Where-Object { $_.PNPClass -match "Camera|Image" -and $_.ConfigManagerErrorCode -eq 0 }
+        if (-not $cam) { $r.Notes += "- CHECK: Camera not detected" }
+        $audio = $pnpDevices | Where-Object { $_.PNPClass -match "Media" -and $_.ConfigManagerErrorCode -eq 0 }
+        if (-not $audio) { $r.Notes += "- CHECK: Sound / mic device not detected" }
+    }
+    catch { }
+
+    # Battery health: full-charge capacity vs. the capacity it had when new (mWh).
+    # powercfg's battery report works without admin rights; the WMI design-capacity
+    # class often fails ("Generic failure") on standard accounts, so it is only a fallback.
+    try {
+        $reportPath = Join-Path $env:TEMP "DQA_BatteryReport.xml"
+        & powercfg.exe /batteryreport /xml /output "$reportPath" 2>&1 | Out-Null
+        if (Test-Path -LiteralPath $reportPath) {
+            [xml]$report = Get-Content -LiteralPath $reportPath -Raw
+            Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue
+            $bat = @($report.BatteryReport.Batteries.Battery)[0]
+            if ($bat -and [double]$bat.DesignCapacity -gt 0 -and [double]$bat.FullChargeCapacity -gt 0) {
+                $r.DesignMWh = [double]$bat.DesignCapacity
+                $r.FullMWh = [double]$bat.FullChargeCapacity
+                $r.CycleCount = [int]$bat.CycleCount
+            }
+        }
+    }
+    catch { }
+    if ($r.DesignMWh -le 0) {
+        try {
+            $full = Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction SilentlyContinue | Select-Object -First 1
+            $design = Get-CimInstance -Namespace root\wmi -ClassName BatteryStaticData -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($full -and $design -and $design.DesignedCapacity -gt 0 -and $full.FullChargedCapacity -gt 0) {
+                $r.FullMWh = [double]$full.FullChargedCapacity
+                $r.DesignMWh = [double]$design.DesignedCapacity
+            }
+        }
+        catch { }
+    }
+    if ($r.DesignMWh -gt 0 -and $r.FullMWh -gt 0) { $r.BatteryHealth = ($r.FullMWh / $r.DesignMWh) * 100 }
+
+    # Device Manager errors (USB & general)
+    try {
+        $errorDevices = $pnpDevices | Where-Object { $_.ConfigManagerErrorCode -gt 0 }
+        if ($errorDevices | Where-Object { $_.PNPClass -eq "USB" }) {
+            $r.Notes += "- CHECK: USB port error in Device Manager"
+        }
+        $errNames = (($errorDevices | Where-Object { $_.PNPClass -ne "USB" }) | Select-Object -ExpandProperty Name) -join ", "
+        if ($errNames) { if ($errNames.Length -gt 90) { $errNames = $errNames.Substring(0, 87) + "..." }; $r.Notes += "- CHECK: Device errors: $errNames" }
+    }
+    catch { }
+
+    # Drive health (SMART)
+    try {
+        $failingDrives = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | Where-Object { $_.Status -match "Fail|Error" -or $_.Status -eq "Pred Fail" }
+        if ($failingDrives) { $r.StorageFailure = "- CHECK: Drive failing (SMART) - replace drive" }
+    }
+    catch { }
+
+    # Storage health: what each internal drive reports about itself (USB drives are skipped)
+    try {
+        $healthNames = @{ 0 = "Healthy"; 1 = "Warning"; 2 = "Unhealthy"; 5 = "Unknown" }
+        $busNames = @{ 17 = "NVMe"; 11 = "SATA"; 8 = "RAID"; 10 = "SAS"; 12 = "SD card"; 13 = "MMC" }
+        $mediaNames = @{ 3 = "HDD"; 4 = "SSD"; 5 = "SCM" }
+        $disks = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage -ClassName MSFT_PhysicalDisk -ErrorAction Stop | Where-Object { $_.BusType -ne 7 })
+        $sysVol = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$($env:SystemDrive)'" -ErrorAction SilentlyContinue
+        $freeText = ""
+        if ($sysVol -and $sysVol.Size -gt 0) {
+            $freeGB = [math]::Round($sysVol.FreeSpace / 1GB)
+            $freeText = ", $freeGB GB free"
+            if (($sysVol.FreeSpace / $sysVol.Size) -lt 0.10) { $r.Notes += "- CHECK: Low disk space ($freeGB GB free)" }
+        }
+        foreach ($d in $disks) {
+            $health = if ($healthNames.ContainsKey([int]$d.HealthStatus)) { $healthNames[[int]$d.HealthStatus] } else { "Unknown" }
+            $bus = if ($busNames.ContainsKey([int]$d.BusType)) { " " + $busNames[[int]$d.BusType] } else { "" }
+            $media = if ($mediaNames.ContainsKey([int]$d.MediaType)) { $mediaNames[[int]$d.MediaType] } else { "drive" }
+            $line = "- $media $([math]::Round($d.Size / 1GB)) GB${bus}: $health$freeText"
+            if ($health -eq "Warning" -or $health -eq "Unhealthy") { $line = "- CHECK: $media $([math]::Round($d.Size / 1GB)) GB${bus}: $health - replace drive" }
+            if ($health -eq "Unhealthy" -and -not $r.StorageFailure) {
+                $r.StorageFailure = "- CHECK: Storage drive unhealthy - replace drive"
+            }
+            $r.Notes += $line
+            $freeText = ""   # only mention free space once
+        }
+    }
+    catch { }
+
+    # Windows version and activation (filtered by the Windows application ID: ~1 s instead of ~35 s)
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $displayVersion = ""
+        try { $displayVersion = " " + (Get-ItemPropertyValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name DisplayVersion -ErrorAction Stop) } catch { }
+        $winText = ($os.Caption -replace '^Microsoft ', '' -replace '^Windows ', 'Win ') + $displayVersion
+        $licNames = @{ 0 = "NOT activated"; 1 = "Activated"; 2 = "NOT activated"; 3 = "NOT activated"; 4 = "NOT activated (non-genuine)"; 5 = "NOT activated"; 6 = "NOT activated" }
+        $actText = "activation unknown"
+        try {
+            $lic = Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL" -ErrorAction Stop | Select-Object -First 1
+            if ($lic -and $licNames.ContainsKey([int]$lic.LicenseStatus)) { $actText = $licNames[[int]$lic.LicenseStatus] }
+        }
+        catch { }
+        $line = "- ${winText}: $actText"
+        if ($actText -like "NOT activated*") { $line = "- CHECK: ${winText}: $actText" }
+        $r.Notes += $line
+        if ($os.Caption -match 'Windows 10') { $r.Notes += "- CHECK: Windows 10 is unsupported - upgrade to Win 11" }
+    }
+    catch { }
+
+    # Security: TPM chip, Secure Boot, BitLocker on the system drive
+    try {
+        $tpm = Get-CimInstance Win32_PnPEntity -Filter "PNPClass='SecurityDevices'" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Trusted Platform' } | Select-Object -First 1
+        if ($tpm) {
+            $tpmVer = if ($tpm.Name -match '(\d\.\d)') { $Matches[1] } else { "" }
+            $tpmText = "TPM $tpmVer " + $(if ($tpm.ConfigManagerErrorCode -eq 0) { "OK" } else { "error" })
+        }
+        else { $tpmText = "No TPM" }
+
+        $sb = $null
+        try { $sb = Get-ItemPropertyValue "HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State" -Name UEFISecureBootEnabled -ErrorAction Stop } catch { }
+        $sbText = if ($sb -eq 1) { "Secure Boot ON" } elseif ($sb -eq 0) { "Secure Boot OFF" } else { "Legacy BIOS (no Secure Boot)" }
+
+        $blText = "BitLocker unknown"
+        try {
+            $blCode = (New-Object -ComObject Shell.Application).NameSpace("$($env:SystemDrive)\").Self.ExtendedProperty('System.Volume.BitLockerProtection')
+            $blText = switch ([int]$blCode) { 1 { "BitLocker ON" } 6 { "BitLocker ON" } 2 { "BitLocker OFF" } 3 { "BitLocker encrypting" } 4 { "BitLocker decrypting" } 5 { "BitLocker suspended" } default { "BitLocker unknown" } }
+        }
+        catch { }
+
+        $line = "- $sbText | $blText"
+        if ($sb -ne 1) { $line = "- CHECK: $sbText | $blText" }
+        $r.Notes += $line
+        # TPM is only mentioned when there is a problem (Windows 11 needs TPM 2.0)
+        if ($tpmText.Trim() -ne "TPM 2.0 OK") { $r.Notes += "- CHECK: $($tpmText.Trim()) - Win 11 needs TPM 2.0" }
+    }
+    catch { }
+
+    # Wireless & sensors: Wi-Fi signal (antenna check), Bluetooth radio, fingerprint / face sensor
+    try {
+        $parts = @()
+        $problem = $false
+
+        $wlan = @(netsh wlan show interfaces 2>$null)
+        if (($wlan -join " ") -match 'There is no wireless interface|Wireless AutoConfig Service .* is not running') {
+            $parts += "No Wi-Fi adapter"; $problem = $true
+        }
+        else {
+            $sigLine = $wlan | Where-Object { $_ -match '^\s*Signal\s*:' } | Select-Object -First 1
+            if ($sigLine -and ($sigLine -split ':', 2)[1].Trim() -match '(\d+)') {
+                $sig = [int]$Matches[1]
+                if ($sig -lt 30) { $parts += "Wi-Fi weak $sig% (check antenna)"; $problem = $true } else { $parts += "Wi-Fi $sig%" }
+            }
+            else { $parts += "Wi-Fi not connected" }
+        }
+
+        # The Bluetooth radio itself is a USB or PCI device in the Bluetooth class
+        $bt = @(Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Bluetooth'" -ErrorAction Stop | Where-Object { $_.DeviceID -match '^(USB|PCI)\\' })
+        if ($bt.Count -eq 0) { $parts += "No Bluetooth"; $problem = $true }
+        elseif (@($bt | Where-Object { $_.ConfigManagerErrorCode -ne 0 }).Count -gt 0) { $parts += "Bluetooth error"; $problem = $true }
+        else { $parts += "Bluetooth OK" }
+
+        $bio = @(Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Biometric'" -ErrorAction Stop)
+        if ($bio.Count -eq 0) { $parts += "No fingerprint/face sensor" }
+        elseif (@($bio | Where-Object { $_.ConfigManagerErrorCode -ne 0 }).Count -gt 0) { $parts += "Fingerprint/face error"; $problem = $true }
+        else { $parts += "Fingerprint/face OK" }
+
+        $r.Notes += $(if ($problem) { "- CHECK: " } else { "- " }) + ($parts -join " | ")
+    }
+    catch { }
+
+    return $r
+}
+
+# Writes the battery health into the Additional Notes (with a warning when it is below the Settings limit)
+function Show-BatteryHealth($r) {
+    if ($null -eq $r -or $null -eq $r.BatteryHealth) { return }   # no battery data (e.g. desktop): add nothing
+    $pct = [int][math]::Round($r.BatteryHealth)
+    $warn = 40   # fixed limit: below 40% of original capacity gets a "- CHECK:" line (not a Settings option)
+    $cycles = if ([int]$r.CycleCount -gt 0) { ", $($r.CycleCount) cycles" } else { "" }
+    # Only noted when the battery is below the limit; a healthy battery adds nothing
+    if ($pct -lt $warn) { Add-AutoNote "- CHECK: Battery health $pct%$cycles - replace battery" }
+}
 
 # ------------------------------------------------------------
 # 1. AUTO-DETECT (Triggers only after Email is provided)
 # ------------------------------------------------------------
-function Start-AutoDetect {
-    if ([string]::IsNullOrWhiteSpace($techEmailInput.Text)) { return }
-    if ($serialInput.Text -ne "" -and $serialInput.Text -ne "UNKNOWN") { return }
-
-    try { $serialInput.Text = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber.Trim() } catch { $serialInput.Text = "UNKNOWN" }
-    
-    try {
-        $battery = Get-CimInstance -ClassName Win32_Battery -ErrorAction Stop
-        if ($battery -and $battery.BatteryStatus -in 2, 3) { $window.FindName("cbCharging").SelectedItem = "Operational" }
-        else { $window.FindName("cbCharging").SelectedItem = "Defective" }
+function Reset-InspectionDetection {
+    if ($Global:audioState -gt 0) {
+        $Global:AutoTestInProgress = $false
+        Stop-AudioTest
     }
-    catch { $window.FindName("cbCharging").SelectedItem = "Not Applicable" }
+    $script:InspectionGeneration++
+    $script:AutoDetectGeneration = $null
+    $script:AutoDetectPending = 0
+    $script:InspectionStorageFailure = ""
+    $window.FindName("DetectStatus").Visibility = "Collapsed"
+}
 
-    try {
-        $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" }
-        if ($adapters) { $window.FindName("cbNetwork").SelectedItem = "Operational" }
-        else { $window.FindName("cbNetwork").SelectedItem = "Defective" }
-    }
-    catch { $window.FindName("cbNetwork").SelectedItem = "Not Applicable" }
-
-    # 0. Auto-Detect External Monitor & ANY USB Device (Triggers when email entered)
-    try {
-        # Check Monitors (PNPClass 'Monitor' is the most reliable for HDMI detection)
-        $pnpMonitors = Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Monitor' AND ConfigManagerErrorCode=0" -ErrorAction SilentlyContinue
-        if (@($pnpMonitors).Count -gt 1) {
-            $window.FindName("cbVideo").SelectedItem = "Operational"
-        }
-    }
-    catch { }
-
-    try {
-        # Check for USB Flash Drives (USBSTOR) or USB Mice/Keyboards (mouhid/kbdhid) connected via USB (VID_ & PID_)
-        $externalUsbDevices = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | 
-        Where-Object { ($_.Service -match 'mouhid|kbdhid|USBSTOR') -and ($_.DeviceID -match 'VID_[0-9A-F]+&PID_') }
-            
-        $usbLogical = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2" -ErrorAction SilentlyContinue
-        
-        if ($externalUsbDevices -or $usbLogical) {
-            $window.FindName("cbUSB").SelectedItem = "Operational"
-        }
-    }
-    catch { }
-
-    # --- Advanced Auto-Detect Notes Warnings ---
-    $autoNotes = @()
-    $pnpDevices = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue
-
-    # 1. Camera & Audio Hardware Presence
-    try {
-        $cam = $pnpDevices | Where-Object { $_.PNPClass -match "Camera|Image" -and $_.ConfigManagerErrorCode -eq 0 }
-        if (-not $cam) { $autoNotes += "Notice: The built-in camera is either missing or not functioning correctly." }
-        
-        $audio = $pnpDevices | Where-Object { $_.PNPClass -match "Media" -and $_.ConfigManagerErrorCode -eq 0 }
-        if (-not $audio) { $autoNotes += "Notice: The sound or microphone system appears to be missing or not working." }
-    }
-    catch { }
-
-    # 2. Deep Battery Health
-    try {
-        $batQuery = Get-WmiObject -Namespace root\wmi -Class BatteryFullChargedCapacity -ErrorAction SilentlyContinue
-        $desQuery = Get-WmiObject -Namespace root\wmi -Class BatteryStaticData -ErrorAction SilentlyContinue
-        if ($batQuery -and $desQuery) {
-            $fullCap = $batQuery.FullChargedCapacity
-            $desCap = $desQuery.DesignedCapacity
-            if ($desCap -gt 0) {
-                $healthRatio = ($fullCap / $desCap) * 100
-                if ($healthRatio -lt 50) {
-                    $autoNotes += "Notice: The battery health is very poor and holds less than half of its original charge ([math]::Round($healthRatio, 1)% remaining)."
-                }
-            }
-        }
-    }
-    catch { }
-
-    # 3. & 4. Device Manager Errors (USB & General)
-    try {
-        $errorDevices = $pnpDevices | Where-Object { $_.ConfigManagerErrorCode -gt 0 }
-        $usbErrors = $errorDevices | Where-Object { $_.PNPClass -eq "USB" }
-        if ($usbErrors) {
-            $autoNotes += "Notice: There appears to be a problem with one or more USB ports."
-        }
-        $otherErrors = $errorDevices | Where-Object { $_.PNPClass -ne "USB" }
-        if ($otherErrors) {
-            $errNames = ($otherErrors | Select-Object -ExpandProperty Name) -join ", "
-            if ($errNames) {
-                $autoNotes += "Notice: The following components have issues: $errNames"
-            }
-        }
-    }
-    catch { }
-
-    # 5. Drive Health (SMART)
-    try {
-        $drives = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue
-        $failingDrives = $drives | Where-Object { $_.Status -match "Fail|Error" -or $_.Status -eq "Pred Fail" }
-        if ($failingDrives) {
-            $autoNotes += "Critical Notice: The main storage drive is showing signs of failing and should be replaced."
-        }
-    }
-    catch { }
-
-    if ($autoNotes.Count -gt 0) {
-        $currentNotes = $notesInput.Text.Trim()
-        $newNotes = $autoNotes -join "`r`n"
-        if ($currentNotes.Length -gt 0) {
-            $notesInput.Text = $currentNotes + "`r`n`r`n[System Hardware Checks]`r`n" + $newNotes
-        }
-        else {
-            $notesInput.Text = "[System Hardware Checks]`r`n" + $newNotes
-        }
-    }
-    
+function Complete-AutoDetectPart {
+    $script:AutoDetectPending--
+    $detectStatus = $window.FindName("DetectStatus")
+    if ($script:AutoDetectPending -eq 0) { $detectStatus.Visibility = "Collapsed" }
+    else { $detectStatus.Text = "Still checking internet, ports, battery and device health..." }
     Test-FormCompletion
+}
+
+function Start-AutoDetect {
+    if ([string]::IsNullOrWhiteSpace($techEmailInput.Text) -or $null -ne $Global:EditingRecord) { return }
+    if ($script:AutoDetectGeneration -eq $script:InspectionGeneration) { return }
+
+    $generation = $script:InspectionGeneration
+    $script:AutoDetectGeneration = $generation
+    $script:AutoDetectPending = 3
+    $detectStatus = $window.FindName("DetectStatus")
+    $detectStatus.Text = "Detecting hardware... (serial, charging, internet)"
+    $detectStatus.Visibility = "Visible"
+    Test-FormCompletion
+
+    Start-BackgroundWork -Work $Global:AutoDetectQuickWork -Context $generation -OnDone {
+        param($result, $generation)
+        if ($generation -ne $script:InspectionGeneration) { return }
+        try {
+            if ($null -eq $result) { return }
+            # Keep a serial or charging result the technician has already entered.
+            if ([string]::IsNullOrWhiteSpace($serialInput.Text) -or $serialInput.Text -eq "UNKNOWN") {
+                $serialInput.Text = $result.Serial
+            }
+            $chargingBox = $window.FindName("cbCharging")
+            if ([string]::IsNullOrWhiteSpace($chargingBox.SelectedItem)) {
+                if ($result.Charging) { $chargingBox.SelectedItem = $result.Charging }
+                else { Add-AutoNote "- CHECK: Confirm charging with the AC adapter and select a result" }
+            }
+        }
+        finally { Complete-AutoDetectPart }
+    }
+
+    Start-BackgroundWork -Work $Global:NetCheckWork -Context $generation -OnDone {
+        param($result, $generation)
+        if ($generation -ne $script:InspectionGeneration) { return }
+        try {
+            if ($null -eq $result) { return }
+            $networkBox = $window.FindName("cbNetwork")
+            if (-not [string]::IsNullOrWhiteSpace($networkBox.SelectedItem)) { return }
+
+            if ($null -eq $result.AdapterUp) { Add-AutoNote "- CHECK: Network adapter status unavailable; check manually" }
+            elseif (-not $result.AdapterUp) {
+                $networkBox.SelectedItem = "Defective"
+                Add-AutoNote "- CHECK: No network adapter connected"
+            }
+            elseif ($result.Internet) { $networkBox.SelectedItem = "Operational" }
+            else {
+                $why = if ($result.Problem -eq "signin") { "network wants a sign-in page" } else { "no internet" }
+                Add-AutoNote "- CHECK: Network connected but $why - check by hand"
+            }
+        }
+        finally { Complete-AutoDetectPart }
+    }
+
+    Start-BackgroundWork -Work $Global:AutoDetectWork -Context $generation -OnDone {
+        param($result, $generation)
+        if ($generation -ne $script:InspectionGeneration) { return }
+        try {
+            if ($null -eq $result) { return }
+            Set-DetectedPortResults $result
+            $script:InspectionStorageFailure = [string]$result.StorageFailure
+            if ($script:InspectionStorageFailure) { Add-AutoNote $script:InspectionStorageFailure -First }
+            foreach ($line in @($result.Notes)) { Add-AutoNote $line }
+            Show-BatteryHealth $result
+        }
+        finally { Complete-AutoDetectPart }
+    }
+}
+
+function Set-DetectedPortResults($Result) {
+    $videoBox = $window.FindName("cbVideo")
+    $usbBox = $window.FindName("cbUSB")
+    if ($Result.VideoOK -and [string]::IsNullOrWhiteSpace($videoBox.SelectedItem)) {
+        $videoBox.SelectedItem = "Operational"
+    }
+    if ($Result.UsbOK -and [string]::IsNullOrWhiteSpace($usbBox.SelectedItem)) {
+        $usbBox.SelectedItem = "Operational"
+    }
 }
 
 $techEmailInput.Add_LostFocus({ Start-AutoDetect })
 $techEmailInput.Add_SelectionChanged({ Start-AutoDetect })
+$techEmailInput.Add_PreviewKeyDown({
+        param($sender, $e)
+        if ($e.Key -eq "Enter" -and -not $sender.IsDropDownOpen) {
+            # Follow the same focus navigation and auto-detect path as Tab.
+            $next = [System.Windows.Input.TraversalRequest]::new([System.Windows.Input.FocusNavigationDirection]::Next)
+            $e.Handled = $sender.MoveFocus($next)
+        }
+    })
 
 # ------------------------------------------------------------
 # 2. CAMERA & KEYBOARD TESTS (Interactive Prompts)
 # ------------------------------------------------------------
 $Global:AutoTestInProgress = $false
 
+# Camera test: opens the Windows Camera app, asks at the bottom of the screen
+# (so the live preview stays visible), then closes the Camera app again.
+function Invoke-CameraTest {
+    $cameraWasOpen = [bool](Get-Process -Name "WindowsCamera" -ErrorAction SilentlyContinue)
+    try { Start-Process "microsoft.windows.camera:" } catch { }
+    Start-Sleep -Seconds 1
+    $res = Show-DsuChoice -Text "Is the camera preview showing a clear, live picture?" -Title "Camera Test" -YesText "Camera works" -NoText "Camera broken" -Position "Bottom"
+    if ($res -eq "Yes") { $window.FindName("cbCamera").SelectedItem = "Operational" }
+    elseif ($res -eq "No") { $window.FindName("cbCamera").SelectedItem = "Defective" }
+    # Close the Camera app only if this test opened it
+    if (-not $cameraWasOpen) { Get-Process -Name "WindowsCamera" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
+    $window.Activate() | Out-Null
+}
+
 $window.FindName("BtnAutoTest").Add_Click({
-        # 1. Run Camera Test
-        Start-Process "microsoft.windows.camera:" 
-        Start-Sleep -Seconds 1
-        $window.Activate()
-        $res = [System.Windows.MessageBox]::Show("Did the camera work properly?", "Camera Test", "YesNo", "Question")
-        if ($res -eq "Yes") { $window.FindName("cbCamera").SelectedItem = "Operational" }
-        elseif ($res -eq "No") { $window.FindName("cbCamera").SelectedItem = "Defective" }
+        if ($Global:audioState -ne 0) { return }   # an audio test is already running
+        # 1. Camera test
+        Invoke-CameraTest
 
-        # 2. Start Audio Test & flag for sequential keyboard test
+        # 2. Start Audio Test & flag for sequential keyboard -> touchscreen tests
         $Global:AutoTestInProgress = $true
-
-        [AudioHelper]::SetVolume(25)
-        $window.FindName("BtnTestAudio").IsEnabled = $false
-        $audioStatusLabel.Text = " [RECORDING] 5s... SPEAK or CLAP now! "
-        $audioStatusLabel.Background = "#DC3545"
-        $audioStatusLabel.Foreground = "White"
-
-        [AudioHelper]::mciSendString("open new type waveaudio alias recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-        [AudioHelper]::mciSendString("record recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-        [AudioHelper]::PlayScaleAsync()
-
-        $Global:audioState = 1
-        $Global:audioTimer.Start()
+        Start-AudioTest
     })
-$window.FindName("BtnTestCamera").Add_Click({ 
-        Start-Process "microsoft.windows.camera:" 
-        Start-Sleep -Seconds 1
-        $window.Activate()
-        $res = [System.Windows.MessageBox]::Show("Did the camera work properly?", "Camera Test", "YesNo", "Question")
-        if ($res -eq "Yes") { $window.FindName("cbCamera").SelectedItem = "Operational" }
-        elseif ($res -eq "No") { $window.FindName("cbCamera").SelectedItem = "Defective" }
-    })
+$window.FindName("BtnTestCamera").Add_Click({ Invoke-CameraTest })
 
 $window.FindName("BtnTestKeys").Add_Click({ 
         $res = Show-KeyboardTester
@@ -1650,127 +3323,279 @@ $window.FindName("BtnTestKeys").Add_Click({
         elseif ($res -eq "Defective") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
     })
 
-$window.FindName("BtnTestTouch").Add_Click({
-        # Hardware Detection First
-        try {
-            $touchDevice = Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "touch screen|touch digitizer" }
-            if (-not $touchDevice) {
-                [System.Windows.MessageBox]::Show("No touchscreen hardware detected in Device Manager.", "Hardware Not Found", "OK", "Warning")
-                $window.FindName("cbTouch").SelectedItem = "Defective"
-                return
-            }
+# Touchscreen test: hardware check first, then the tap test (repeats on Redo / Retry)
+function Invoke-TouchTest {
+    try {
+        $touchDevice = Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "touch screen|touch digitizer" }
+        if (-not $touchDevice) {
+            [DsuMessageBox]::Show("No touchscreen hardware detected in Device Manager.", "Hardware Not Found", "OK", "Warning") | Out-Null
+            $window.FindName("cbTouch").SelectedItem = "Defective"
+            return
         }
-        catch { }
+    }
+    catch { }
 
-        do {
-            $res = Show-TouchscreenTester
-            if ($res -eq "Operational") { 
-                $window.FindName("cbTouch").SelectedItem = "Operational" 
-            }
-            elseif ($res -eq "Defective") { 
-                $window.FindName("cbTouch").SelectedItem = "Defective" 
-            }
-        } while ($res -eq "Retry")
-    })
+    do {
+        $res = Show-TouchscreenTester
+        if ($res -eq "Operational") { $window.FindName("cbTouch").SelectedItem = "Operational" }
+        elseif ($res -eq "Defective") { $window.FindName("cbTouch").SelectedItem = "Defective" }
+    } while ($res -eq "Retry")
+}
+
+$window.FindName("BtnTestTouch").Add_Click({ Invoke-TouchTest })
 
 # ------------------------------------------------------------
-# 3. ASYNC AUDIO & MIC TEST (With Direct Volume API & Prompts)
+# 3. ASYNC AUDIO & MIC TEST (soft chime + voice recording)
+#    The mic records for 6 s. A soft chime plays from the speakers right
+#    after recording starts (speaker test); then the technician speaks or
+#    claps. The recording is cleaned up (hum removed, quiet audio boosted,
+#    peaks soft-limited) and played back: you hear the chime + your voice.
+#    States: 0 idle | 1 recording | 2 playback
 # ------------------------------------------------------------
 $Global:audioTimer = New-Object System.Windows.Threading.DispatcherTimer
-$Global:audioTimer.Interval = [TimeSpan]::FromSeconds(5)
 $Global:audioState = 0
-$Global:tempAudioPath = "$env:TEMP\DQA_MicTest.wav"
+$Global:tempAudioPath = $null
 $Global:soundPlayer = New-Object System.Media.SoundPlayer
+# 6 s total: the 4 s chime + about 2 s for the technician's voice or clap
+$Global:RecordSeconds = 6
+$Global:recordClock = $null
+
+# Generate each sound on first use and keep it in memory for previews and tests.
+$script:TestSoundWavs = @{}
+
+function Start-Chime([string]$Sound = (Get-Setting "AudioSound")) {
+    try {
+        if (-not $script:TestSoundWavs.ContainsKey($Sound)) {
+            $script:TestSoundWavs[$Sound] = [AudioHelper]::BuildChimeWav($Sound)
+        }
+        $chimeStream = [System.IO.MemoryStream]::new($script:TestSoundWavs[$Sound], $false)
+        $Global:chimePlayer = New-Object System.Media.SoundPlayer -ArgumentList $chimeStream
+        $Global:chimePlayer.Load()
+        $Global:chimePlayer.Play()
+        return $true
+    }
+    catch { return $false }
+}
+
+# Live mic level bar (polls the recorder while it records)
+$Global:micMeterTimer = New-Object System.Windows.Threading.DispatcherTimer
+$Global:micMeterTimer.Interval = [TimeSpan]::FromMilliseconds(80)
+$Global:micMeterTimer.Add_Tick({
+        # Status cue: listen while the chime plays, then a "speak now" countdown
+        if ($null -ne $Global:recordClock) {
+            $elapsed = $Global:recordClock.Elapsed.TotalSeconds
+            $chimeEnd = [AudioHelper]::ChimeSeconds + 0.15
+            if (-not $Global:SpeakerCueStarted -and $elapsed -lt $chimeEnd) {
+                $statusText = " Speaker test sound unavailable. "
+                $statusColor = "#856404"
+            }
+            elseif ($elapsed -lt ([AudioHelper]::LeftUntil + 0.15)) {
+                $statusText = " Sound on the LEFT speaker... "
+                $statusColor = "#003552"
+            }
+            elseif ($elapsed -lt $chimeEnd) {
+                $statusText = " Sound on the RIGHT speaker... "
+                $statusColor = "#00779E"
+            }
+            else {
+                $left = [Math]::Max(0, [Math]::Ceiling($Global:RecordSeconds - $elapsed))
+                $statusText = if ($Global:MicCaptureError) { " Microphone recording unavailable. " }
+                    else { " Speak or clap NOW - say ""Mic test 1, 2, 3""  ($($left)s) " }
+                $statusColor = "#DC3545"
+            }
+            if ($audioStatusLabel.Text -ne $statusText) {
+                $audioStatusLabel.Text = $statusText
+                $audioStatusLabel.Background = $statusColor
+            }
+        }
+
+        if ($Global:MicCaptureError) { return }
+        $raw = [AudioHelper]::MciQuery("status recsound level")
+        $value = 0
+        if (-not [int]::TryParse($raw, [ref]$value)) {
+            # This audio driver doesn't report a live level: hide the bar rather than show a dead meter
+            $Global:micMeterMisses++
+            if ($Global:micMeterMisses -ge 3) { $window.FindName("MicMeter").Visibility = "Collapsed" }
+            return
+        }
+        $Global:micMeterMisses = 0
+        # 16-bit level 0..32767; scaled up so normal speech fills most of the bar
+        $fraction = [Math]::Min(1.0, [Math]::Sqrt([Math]::Abs($value) / 32768.0) * 1.6)
+        $track = $window.FindName("MicMeterTrack")
+        $window.FindName("MicMeterFill").Width = [Math]::Max(0, $track.ActualWidth * $fraction)
+    })
+
+# Plain-language mic level from the recording's peak (0.0 - 1.0)
+function Get-MicLevelText([double]$Level) {
+    if ($Level -lt 0) { return "unknown" }
+    if ($Level -lt 0.02) { return "almost nothing recorded" }
+    if ($Level -lt 0.10) { return "low (boosted for playback)" }
+    return "good"
+}
+
+function Set-TestButtonsEnabled([bool]$Enabled) {
+    $window.FindName("BtnTestAudio").IsEnabled = $Enabled
+    $window.FindName("BtnAutoTest").IsEnabled = $Enabled
+}
+
+function Set-AudioStatus([string]$Text, [string]$Color) {
+    $audioStatusLabel.Text = " $Text "
+    $audioStatusLabel.Background = $Color
+    $audioStatusLabel.Foreground = "White"
+    $audioStatusLabel.Visibility = "Visible"
+}
+
+function Start-AudioTest {
+    if ($Global:audioState -ne 0) { return }
+    $Global:audioState = 1
+    $Global:tempAudioPath = Join-Path ([IO.Path]::GetTempPath()) "DQA_MicTest_$([guid]::NewGuid().ToString('N')).wav"
+    $Global:MicCaptureError = ""
+    $Global:MicLevelText = "unknown"
+
+    Set-TestButtonsEnabled $false
+    $window.FindName("cbMic").SelectedIndex = 0
+    $window.FindName("cbAudio").SelectedIndex = 0
+    Test-FormCompletion
+
+    [AudioHelper]::SetVolume([int](Get-Setting "AudioVolume"))
+    Set-AudioStatus "Sound on the LEFT speaker..." "#003552"
+    $window.FindName("MicMeterFill").Width = 0
+    $Global:micMeterMisses = 0
+
+    [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+    $opened = [AudioHelper]::mciSendString("open new type waveaudio alias recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero)
+    if ($opened -eq 0) {
+        $fmt = [AudioHelper]::mciSendString("set recsound time format ms bitspersample 16 channels 1 samplespersec 44100 bytespersec 88200 alignment 2", [IntPtr]::Zero, 0, [IntPtr]::Zero)
+        if ($fmt -ne 0) {
+            foreach ($cmd in @("set recsound bitspersample 16", "set recsound samplespersec 44100", "set recsound channels 1", "set recsound bytespersec 88200", "set recsound alignment 2")) {
+                [AudioHelper]::mciSendString($cmd, [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+            }
+        }
+        $recorded = [AudioHelper]::mciSendString("record recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero)
+        if ($recorded -ne 0) {
+            $Global:MicCaptureError = "Windows could not start recording from the selected input."
+            [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+        }
+    }
+    else { $Global:MicCaptureError = "Windows could not open the selected microphone." }
+    $window.FindName("MicMeter").Visibility = if ($Global:MicCaptureError) { "Collapsed" } else { "Visible" }
+
+    # Give the recorder a moment to start so the chime is captured too.
+    Start-Sleep -Milliseconds 150
+    $Global:SpeakerCueStarted = Start-Chime
+    if (-not $Global:SpeakerCueStarted) { Set-AudioStatus "Speaker test sound unavailable." "#856404" }
+    $Global:recordClock = [Diagnostics.Stopwatch]::StartNew()
+    $Global:audioTimer.Interval = [TimeSpan]::FromSeconds($Global:RecordSeconds)
+    $Global:audioTimer.Start()
+    $Global:micMeterTimer.Start()
+}
+
+# Re-enables the buttons and continues Auto-Test (Keyboard -> Touchscreen)
+function Complete-AudioTest {
+    Stop-AudioTest
+    if ($Global:AutoTestInProgress) {
+        $Global:AutoTestInProgress = $false
+        $resKey = Show-KeyboardTester
+        if ($resKey -eq "Operational") { $window.FindName("cbKeyboard").SelectedItem = "Operational" }
+        elseif ($resKey -eq "Defective") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
+        Invoke-TouchTest
+    }
+}
+
+# Also used when the inspection changes or the window closes mid-test.
+function Stop-AudioTest {
+    $Global:audioTimer.Stop()
+    $Global:micMeterTimer.Stop()
+    $Global:recordClock = $null
+    try { $Global:soundPlayer.Stop() } catch { }
+    try { if ($Global:chimePlayer) { $Global:chimePlayer.Stop() } } catch { }
+    [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+    if ($Global:tempAudioPath) {
+        Remove-Item -LiteralPath $Global:tempAudioPath -Force -ErrorAction SilentlyContinue
+        $Global:tempAudioPath = $null
+    }
+    $Global:audioState = 0
+    $audioStatusLabel.Visibility = "Collapsed"
+    $window.FindName("MicMeter").Visibility = "Collapsed"
+    Set-TestButtonsEnabled $true
+    Test-FormCompletion
+}
+$window.Add_Closing({ Stop-AudioTest })
 
 $Global:audioTimer.Add_Tick({
         $Global:audioTimer.Stop()
-    
+
         if ($Global:audioState -eq 1) {
-            $saveCmd = 'save recsound "' + $Global:tempAudioPath + '"'
-            [AudioHelper]::mciSendString("stop recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-            [AudioHelper]::mciSendString($saveCmd, [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-            [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+            $Global:micMeterTimer.Stop()
+            $Global:recordClock = $null
+            $window.FindName("MicMeter").Visibility = "Collapsed"
 
-            $audioStatusLabel.Text = " [PLAYING] Audio playing back... Listen to your speakers. "
-            $audioStatusLabel.Background = "#003552"
-            $audioStatusLabel.Foreground = "White"
-
-            if (Test-Path $Global:tempAudioPath) {
-                $Global:soundPlayer.SoundLocation = $Global:tempAudioPath
-                $Global:soundPlayer.Play() 
+            $playMs = 1
+            if (-not $Global:MicCaptureError) {
+                $saveCmd = 'save recsound "' + $Global:tempAudioPath + '"'
+                $stopped = [AudioHelper]::mciSendString("stop recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero)
+                $saved = [AudioHelper]::mciSendString($saveCmd, [IntPtr]::Zero, 0, [IntPtr]::Zero)
+                [AudioHelper]::mciSendString("close recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
+                if ($stopped -ne 0 -or $saved -ne 0 -or -not [IO.File]::Exists($Global:tempAudioPath)) {
+                    $Global:MicCaptureError = "Windows could not save a new microphone recording."
+                }
+                else {
+                    try {
+                        $level = [AudioHelper]::NormalizeWav($Global:tempAudioPath, 8.0)
+                        $Global:soundPlayer = [System.Media.SoundPlayer]::new($Global:tempAudioPath)
+                        $Global:soundPlayer.Load()
+                        $Global:soundPlayer.Play()
+                        $Global:MicLevelText = Get-MicLevelText $level
+                        Set-AudioStatus "Playing back the recording...  Mic level: $($Global:MicLevelText)" "#003552"
+                        $playMs = ($Global:RecordSeconds * 1000) + 400
+                    }
+                    catch { $Global:MicCaptureError = "The microphone recording could not be played back." }
+                }
             }
-        
+
             $Global:audioState = 2
-            $Global:audioTimer.Start() 
-        
+            $Global:audioTimer.Interval = [TimeSpan]::FromMilliseconds($playMs)
+            $Global:audioTimer.Start()
         }
         elseif ($Global:audioState -eq 2) {
-            $audioStatusLabel.Text = " [DONE] Audio test complete. "
-            $audioStatusLabel.Background = "#28A745"
-            $audioStatusLabel.Foreground = "White"
-            Remove-Item $Global:tempAudioPath -Force -ErrorAction SilentlyContinue
-        
-            $window.Activate()
-            $resAudio = [System.Windows.MessageBox]::Show("Did you hear the audio playing from speakers or not?", "Speaker Test", "YesNo", "Question")
-            if ($resAudio -eq "Yes") { 
-                $window.FindName("cbAudio").SelectedItem = "Operational"
-            }
-            elseif ($resAudio -eq "No") { 
-                $window.FindName("cbAudio").SelectedItem = "Defective"
-            }
+            $audioStatusLabel.Visibility = "Collapsed"
+            $window.Activate() | Out-Null
 
-            $resMic = [System.Windows.MessageBox]::Show("Did you hear audio playback sound and your voice or clap?", "Microphone Test", "YesNo", "Question")
-            if ($resMic -eq "Yes") { 
-                $window.FindName("cbMic").SelectedItem = "Operational"
-            }
-            elseif ($resMic -eq "No") { 
-                $window.FindName("cbMic").SelectedItem = "Defective"
-            }
-            $window.FindName("BtnTestAudio").IsEnabled = $true
-            
-            if ($Global:AutoTestInProgress) {
-                $resKey = Show-KeyboardTester
-                if ($resKey -eq "Operational") { $window.FindName("cbKeyboard").SelectedItem = "Operational" }
-                elseif ($resKey -eq "Defective") { $window.FindName("cbKeyboard").SelectedItem = "Defective" }
-
-                try {
-                    $touchDevice = Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "touch screen|touch digitizer" }
-                    if (-not $touchDevice) {
-                        [System.Windows.MessageBox]::Show("No touchscreen hardware detected in Device Manager.", "Hardware Not Found", "OK", "Warning")
-                        $window.FindName("cbTouch").SelectedItem = "Defective"
-                    }
-                    else {
-                        do {
-                            $resTouch = Show-TouchscreenTester
-                            if ($resTouch -eq "Operational") { $window.FindName("cbTouch").SelectedItem = "Operational" }
-                            elseif ($resTouch -eq "Defective") { $window.FindName("cbTouch").SelectedItem = "Defective" }
-                        } while ($resTouch -eq "Retry")
-                    }
+            if ($Global:SpeakerCueStarted) {
+                # The test sound plays on the LEFT speaker first, then on the RIGHT.
+                $speakerBtns = @(
+                    @{ Text = "Both sides"; Result = "Both"; Style = "Success"; IsDefault = $true },
+                    @{ Text = "Left only"; Result = "Left"; Style = "DangerOutline" },
+                    @{ Text = "Right only"; Result = "Right"; Style = "DangerOutline" },
+                    @{ Text = "Neither"; Result = "None"; Style = "DangerOutline" }
+                )
+                $resAudio = Show-DsuDialog -Title "Speaker Test" -Kind "Question" -Buttons $speakerBtns -DefaultResult "Cancel" -Width 480 `
+                    -Message "Which speakers played the test sound?`n`nThe sound plays on the LEFT first, then on the RIGHT."
+                switch ($resAudio) {
+                    "Both" { $window.FindName("cbAudio").SelectedItem = "Operational" }
+                    "Left" { $window.FindName("cbAudio").SelectedItem = "Defective"; Add-AutoNote "- CHECK: Right speaker silent" }
+                    "Right" { $window.FindName("cbAudio").SelectedItem = "Defective"; Add-AutoNote "- CHECK: Left speaker silent" }
+                    "None" { $window.FindName("cbAudio").SelectedItem = "Defective"; Add-AutoNote "- CHECK: No sound from either speaker" }
                 }
-                catch { }
-
-                $Global:AutoTestInProgress = $false
             }
+            else {
+                [DsuMessageBox]::Show("The stereo test sound could not play. Retry or check both speakers manually.", "Speaker Test", "OK", "Warning") | Out-Null
+            }
+
+            if ($Global:MicCaptureError) {
+                [DsuMessageBox]::Show("$($Global:MicCaptureError) Retry or check the microphone manually.", "Microphone Test", "OK", "Warning") | Out-Null
+            }
+            else {
+                $resMic = Show-DsuChoice -Text "Did you hear your voice or clap in the playback?`n`nMic level: $($Global:MicLevelText)" -Title "Microphone Test" -YesText "Yes, mic works" -NoText "No"
+                if ($resMic -eq "Yes") { $window.FindName("cbMic").SelectedItem = "Operational" }
+                elseif ($resMic -eq "No") { $window.FindName("cbMic").SelectedItem = "Defective" }
+            }
+
+            Complete-AudioTest
         }
     })
 
-$window.FindName("BtnTestAudio").Add_Click({
-    
-        # Automatically force unmute and set system volume to exactly 25% using Core Audio API
-        [AudioHelper]::SetVolume(25)
-
-        $window.FindName("BtnTestAudio").IsEnabled = $false
-        $audioStatusLabel.Text = " [RECORDING] 5s... SPEAK or CLAP now! "
-        $audioStatusLabel.Background = "#DC3545"
-        $audioStatusLabel.Foreground = "White"
-    
-        [AudioHelper]::mciSendString("open new type waveaudio alias recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-        [AudioHelper]::mciSendString("record recsound", [IntPtr]::Zero, 0, [IntPtr]::Zero) | Out-Null
-        [AudioHelper]::PlayScaleAsync()
-    
-        $Global:audioState = 1
-        $Global:audioTimer.Start()
-    })
+$window.FindName("BtnTestAudio").Add_Click({ Start-AudioTest })
 
 # ------------------------------------------------------------
 # AUTO-FILL REMAINING TO OPERATIONAL (Excludes Auto-Detected & Interactive Tests)
@@ -1797,75 +3622,97 @@ $window.FindName("BtnAutoFill").Add_Click({
 # ------------------------------------------------------------
 # 4. SAVE & DASHBOARD LOGIC (Modifies Script Content)
 # ------------------------------------------------------------
+function Set-InspectionDurationMode {
+    $editing = $null -ne $Global:EditingRecord
+    $additionalTimeInput.Clear()
+    $durationCorrectionInput.Clear()
+    $window.FindName("AdditionalTimePanel").Visibility = if ($editing) { "Collapsed" } else { "Visible" }
+    $window.FindName("InspectionTimerPanel").Visibility = if ($editing) { "Collapsed" } else { "Visible" }
+    $window.FindName("DurationCorrectionPanel").Visibility = if ($editing) { "Visible" } else { "Collapsed" }
+
+    if ($editing) {
+        $Global:sessionStopwatch.Stop()
+        $Global:isTimerPaused = $true
+        $Global:uiTimer.Stop()
+        $savedDuration = $Global:EditingRecord.DurationMins
+        $window.FindName("SavedDurationHint").Text = if ([string]::IsNullOrWhiteSpace($savedDuration)) {
+            "No duration was recorded. Leave blank to keep it empty."
+        }
+        else {
+            "Saved duration is {0} min. Leave blank to keep it." -f $savedDuration
+        }
+    }
+}
+
 $window.FindName("SaveInspectionBtn").Add_Click({
-    
-        $durationSpan = $Global:sessionStopwatch.Elapsed
-        $calcDurationMins = $durationSpan.TotalMinutes
-        
-        $addTime = 0
-        if (-not [string]::IsNullOrWhiteSpace($additionalTimeInput.Text) -and [double]::TryParse($additionalTimeInput.Text, [ref]$addTime)) {
-            $calcDurationMins += $addTime
+        if ($script:AutoDetectPending -gt 0 -or $Global:audioState -gt 0) { return }
+        $recordToReplace = $Global:EditingRecord
+        if ($null -ne $recordToReplace -and $script:EditingDatabaseCsv -cne $Global:DatabaseCSV) {
+            [DsuMessageBox]::Show("Inspection history changed while this record was open. Reopen it from the dashboard to edit it.", "Inspection Changed", "OK", "Warning") | Out-Null
+            return
+        }
+        $keepSavedDuration = $false
+        if ($null -ne $recordToReplace) {
+            $keepSavedDuration = [string]::IsNullOrWhiteSpace($durationCorrectionInput.Text)
+            $finalDuration = $recordToReplace.DurationMins
+            if (-not $keepSavedDuration) {
+                $correctedDuration = 0.0
+                $validDuration = [double]::TryParse($durationCorrectionInput.Text, [System.Globalization.NumberStyles]::Float,
+                    [System.Globalization.CultureInfo]::CurrentCulture, [ref]$correctedDuration)
+                if (-not $validDuration -or [double]::IsNaN($correctedDuration) -or
+                    [double]::IsInfinity($correctedDuration) -or $correctedDuration -lt 0.1) {
+                    $message = "Enter at least {0} minutes, or clear the correction field to keep the saved duration." -f 0.1
+                    [DsuMessageBox]::Show($message, "Invalid duration", "OK", "Warning") | Out-Null
+                    $durationCorrectionInput.Focus() | Out-Null
+                    return
+                }
+                $finalDuration = [math]::Round($correctedDuration, 1).ToString([System.Globalization.CultureInfo]::InvariantCulture)
+            }
+        }
+        else {
+            $calcDurationMins = $Global:sessionStopwatch.Elapsed.TotalMinutes
+            $addTime = 0.0
+            if (-not [string]::IsNullOrWhiteSpace($additionalTimeInput.Text) -and [double]::TryParse($additionalTimeInput.Text, [ref]$addTime)) {
+                $calcDurationMins += $addTime
+            }
+
+            $finalDuration = [math]::Max(0.1, [math]::Round($calcDurationMins, 1))
         }
 
-        $finalDuration = [math]::Round($calcDurationMins, 1)
-        if ($finalDuration -le 0) { $finalDuration = 0.1 }
-
         $rawEmail = $techEmailInput.Text.Trim()
-        if ($rawEmail -match "(?i)^sandeep") { $rawEmail = "Sandeep.Pokharel@trojans.dsu.edu" }
-        elseif ($rawEmail -match "(?i)^sandesh") { $rawEmail = "Sandesh.Dhakal@trojans.dsu.edu" }
         $rawEmail = Format-TitleCaseEmail $rawEmail
-        $techEmailInput.Text = $rawEmail
 
         if ([string]::IsNullOrWhiteSpace($rawEmail) -or [string]::IsNullOrWhiteSpace($serialInput.Text)) {
-            [System.Windows.MessageBox]::Show("Technician Email and Serial Number are required.", "Error", "OK", "Warning")
+            [DsuMessageBox]::Show("Technician Email and Serial Number are required.", "Error", "OK", "Warning")
             return
         }
 
-        $savedSerial = $serialInput.Text
+        $savedSerial = $serialInput.Text.Trim()
+        $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
+        $existingRecord = $allData | Where-Object {
+            ([string]$_.SerialNumber).Trim() -eq $savedSerial
+        } | Select-Object -First 1
+        $editingSameSerial = $null -ne $recordToReplace -and ([string]$recordToReplace.SerialNumber).Trim() -eq $savedSerial
 
-        $existingSerials = @()
-        $allData = @()
-        if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
-            $allData = @($Global:DatabaseCSV | ConvertFrom-Csv)
-            $existingSerials = $allData | Select-Object -ExpandProperty SerialNumber -ErrorAction SilentlyContinue
-        }
-        $isDuplicate = ($savedSerial -in $existingSerials)
-        if ($null -ne $Global:EditingRecord -and $Global:EditingRecord.SerialNumber -eq $savedSerial) {
-            $isDuplicate = $false
-        }
-
-        if ($isDuplicate) {
-            $dupConfirm = [System.Windows.MessageBox]::Show(
-                "Serial number '$savedSerial' already exists in the database.`n`nDo you want to overwrite the existing entry?",
-                "Duplicate Serial Number Detected", "YesNo", "Warning"
-            )
-            if ($dupConfirm -eq "Yes") {
-                $Global:EditingRecord = $allData | Where-Object { $_.SerialNumber -eq $savedSerial } | Select-Object -First 1
-            }
-            else {
+        if ($existingRecord -and -not $editingSameSerial) {
+            if ($null -ne $recordToReplace) {
+                [DsuMessageBox]::Show("Another inspection already uses this serial number. Enter a different serial or edit that record from the dashboard.", "Serial Already Saved", "OK", "Warning") | Out-Null
                 return
             }
+            $dupBtns = @(
+                @{ Text = "Replace old record"; Result = "Yes"; Style = "Danger" },
+                @{ Text = "Cancel"; Result = "No"; Style = "Secondary"; IsDefault = $true; IsCancel = $true }
+            )
+            $dupConfirm = Show-DsuDialog -Title "Serial Already Saved" -Kind "Warning" -Buttons $dupBtns -DefaultResult "No" -Width 460 `
+                -Message "Serial number '$savedSerial' already has a saved inspection.`n`nResult: $($existingRecord.FinalStatus)`nTechnician: $($existingRecord.TechnicianEmail)`nDuration: $($existingRecord.DurationMins) min`n`nReplace it with this new inspection?"
+            if ($dupConfirm -ne "Yes") { return }
+            $recordToReplace = $existingRecord
+            $keepSavedDuration = $false
         }
 
-        $currentIndex = 1
-        if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
-            $allExisting = @($Global:DatabaseCSV | ConvertFrom-Csv)
-            if ($null -ne $Global:EditingRecord -and $Global:EditingRecord.Index) {
-                $currentIndex = $Global:EditingRecord.Index
-            }
-            elseif ($allExisting.Count -gt 0) {
-                $lastIndex = 0
-                if ([int]::TryParse($allExisting[-1].Index, [ref]$lastIndex)) {
-                    $currentIndex = $lastIndex + 1
-                }
-                else {
-                    $currentIndex = $allExisting.Count + 1
-                }
-            }
-        }
-
+        if ($script:InspectionStorageFailure) { Add-AutoNote $script:InspectionStorageFailure -First }
         $R = [ordered]@{
-            Index = $currentIndex; TechnicianEmail = $rawEmail; SerialNumber = $savedSerial; DurationMins = $finalDuration
+            Index = 0; TechnicianEmail = $rawEmail; SerialNumber = $savedSerial; DurationMins = $finalDuration
             Charging = $window.FindName("cbCharging").Text; Screen = $window.FindName("cbScreen").Text
             Touchscreen = $window.FindName("cbTouch").Text; NetworkAdapters = $window.FindName("cbNetwork").Text
             Keyboard = $window.FindName("cbKeyboard").Text; MouseTrackpad = $window.FindName("cbMouse").Text
@@ -1877,58 +3724,52 @@ $window.FindName("SaveInspectionBtn").Add_Click({
             Notes = ($notesInput.Text.Trim() -replace "`r`n", " | " -replace "`n", " | " -replace "`r", " | ")
         }
 
-        $failFound = $false
-        foreach ($val in $R.Values) { if ($val -eq "Defective" -or $val -eq "Needs Repair") { $failFound = $true } }
-        $FinalStatusDisplay = if ($failFound) { "FAILED" } else { "PASSED" }
+        $FinalStatusDisplay = if (Test-DqaInspectionFailed ([pscustomobject]$R)) { "FAILED" } else { "PASSED" }
+        $R["FinalStatus"] = $FinalStatusDisplay
+        $row = [pscustomobject]$R
 
-        $R.Add("FinalStatus", $FinalStatusDisplay)
-
-        if ($rawEmail -notin $Global:SavedEmails) {
-            $Global:SavedEmails += $rawEmail
-            $techEmailInput.ItemsSource = $Global:SavedEmails
-        }
-
-        if ($null -ne $Global:EditingRecord) {
-            $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
+        if ($null -ne $recordToReplace) {
+            $recordKey = Get-DqaRecordKey $recordToReplace
             $matchIndex = -1
             for ($i = 0; $i -lt $allData.Count; $i++) {
-                if ($allData[$i].SerialNumber -eq $Global:EditingRecord.SerialNumber -and $allData[$i].DurationMins -eq $Global:EditingRecord.DurationMins) {
-                    $matchIndex = $i
-                    break
-                }
+                if ((Get-DqaRecordKey $allData[$i]) -eq $recordKey) { $matchIndex = $i; break }
             }
-            if ($matchIndex -ge 0) {
-                $allData[$matchIndex] = [PSCustomObject]$R
+            if ($matchIndex -lt 0) {
+                [DsuMessageBox]::Show("This inspection changed while it was open. Reopen it from the dashboard to edit it.", "Inspection Changed", "OK", "Warning") | Out-Null
+                return
             }
-            else {
-                $allData.Add([PSCustomObject]$R) | Out-Null
-            }
+            if ($keepSavedDuration) { $row.DurationMins = $allData[$matchIndex].DurationMins }
+            $allData[$matchIndex] = $row
         }
         else {
-            $allData = [System.Collections.ArrayList]@()
-            if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) {
-                $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
-            }
-            $allData.Add([PSCustomObject]$R) | Out-Null
+            [void]$allData.Add($row)
         }
-        
-        for ($k = 0; $k -lt $allData.Count; $k++) { $allData[$k].Index = ($k + 1) }
-        
-        $csvHeader = "Index,TechnicianEmail,SerialNumber,DurationMins,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
-        if ($allData.Count -gt 0) {
-            $newCsvData = ($allData | Select-Object -Property Index, TechnicianEmail, SerialNumber, DurationMins, Charging, Screen, Touchscreen, NetworkAdapters, Keyboard, MouseTrackpad, VideoPorts, AudioOutput, Microphone, Camera, USBPorts, PalmRest, Backplate, BaseAndVents, Hinge, Notes, FinalStatus | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
-            $Global:DatabaseCSV = $csvHeader + "`r`n" + $newCsvData
-        }
-        else {
-            $Global:DatabaseCSV = $csvHeader + "`r`n"
-        }
-        
-        $Global:EditingRecord = $null
-        $saveInspectionBtn.Content = "SAVE INSPECTION"
-    
-        Update-ScriptData
 
-        if (Test-Path "C:\Windows\Media\chimes.wav") { (New-Object System.Media.SoundPlayer "C:\Windows\Media\chimes.wav").Play() } else { [System.Media.SystemSounds]::Beep.Play() }
+        $addEmail = $rawEmail -notin $Global:SavedEmails
+        $nextEmails = @($Global:SavedEmails)
+        if ($addEmail) { $nextEmails += $rawEmail }
+        $nextSettings = [ordered]@{}
+        foreach ($key in $Global:AppSettings.Keys) { $nextSettings[$key] = $Global:AppSettings[$key] }
+        if (Get-Setting "RememberLastTech") { $nextSettings["LastTechnician"] = $rawEmail }
+
+        try {
+            Update-ScriptData -DatabaseCSV (ConvertTo-DqaDatabaseCsv $allData) -SavedEmails $nextEmails -Settings $nextSettings
+        }
+        catch {
+            [DsuMessageBox]::Show("The inspection could not be saved. Your entries are still on this form.`n`n$($_.Exception.Message)", "Save Error", "OK", "Error") | Out-Null
+            return
+        }
+        if ($addEmail) { $techEmailInput.ItemsSource = $Global:SavedEmails }
+        $techEmailInput.Text = $rawEmail
+        $Global:EditingRecord = $null
+        Reset-InspectionDetection
+        Set-InspectionDurationMode
+        $saveInspectionBtn.Content = "SAVE INSPECTION"
+
+        # Settings > "Play a sound when an inspection is saved"
+        if (Get-Setting "SaveSound") {
+            if (Test-Path "C:\Windows\Media\chimes.wav") { (New-Object System.Media.SoundPlayer "C:\Windows\Media\chimes.wav").Play() } else { [System.Media.SystemSounds]::Beep.Play() }
+        }
     
         $lastSavedLabel.Text = "SUCCESS: $savedSerial saved as $FinalStatusDisplay at $((Get-Date).ToString('hh:mm tt'))!"
         $lastSavedLabel.Foreground = "#39FF14" # Bright Green
@@ -1944,13 +3785,13 @@ $window.FindName("SaveInspectionBtn").Add_Click({
                 } catch {}
             })
 
-        $serialInput.Text = ""; $notesInput.Text = ""; $additionalTimeInput.Text = ""; $audioStatusLabel.Text = " "; $audioStatusLabel.Background = "Transparent"
+        $serialInput.Text = ""; $notesInput.Text = ""; $audioStatusLabel.Text = " "; $audioStatusLabel.Background = "Transparent"
         $window.FindName("rbWipeYes").IsChecked = $false
         $Global:sessionStopwatch = New-Object System.Diagnostics.Stopwatch
         $Global:isTimerPaused = $true
         $window.FindName("LiveTimerLabel").Foreground = "#DC3545"
         $window.FindName("LiveTimerLabel").Text = "00:00"
-        $window.FindName("PauseTimerBtn").Content = "$([char]0x25B6)"
+        $window.FindName("PauseTimerBtn").Content = "$([char]0xE768)"
         if ($null -ne $Global:uiTimer) { $Global:uiTimer.Start() }
     
         foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
@@ -1967,11 +3808,7 @@ function Update-Dashboard {
     else { $data = @() }
 
     foreach ($row in $data) {
-        $isFail = $false
-        foreach ($prop in $row.psobject.properties) {
-            if ($prop.Value -in @("Defective", "Needs Repair")) { $isFail = $true; break }
-        }
-        $statusText = if ($isFail) { "FAILED" } else { "PASSED" }
+        $statusText = if ($row.FinalStatus -eq "FAILED" -or (Test-DqaInspectionFailed $row)) { "FAILED" } else { "PASSED" }
         $row | Add-Member -MemberType NoteProperty -Name "FinalStatus" -Value $statusText -Force
         if ($row.DurationMins) { $row.DurationMins = [double]$row.DurationMins }
         if ($row.Index) { $row.Index = [int]$row.Index }
@@ -1996,94 +3833,112 @@ function Update-Dashboard {
     $resultsGrid.ItemsSource = $filtered
 }
 
-$window.FindName("RefreshBtn").Add_Click({ Update-Dashboard })
+# Refresh the dashboard every time its tab is opened (replaces the Refresh button).
+# SelectionChanged also bubbles up from the ComboBoxes and the grid, so only react to the tab control itself.
+$window.FindName("MainTabControl").Add_SelectionChanged({
+        param($s, $e)
+        if ($e.OriginalSource -eq $s -and $s.SelectedIndex -eq 1) { Update-Dashboard }
+    })
 
 # ------------------------------------------------------------
 # RESET / CLEAR FORM BUTTON
 # ------------------------------------------------------------
 $window.FindName("ResetFormBtn").Add_Click({
         if ($serialInput.Text -ne "" -or $notesInput.Text -ne "") {
-            $res = [System.Windows.MessageBox]::Show("Are you sure you want to clear all entered data?", "Confirm Reset", "YesNo", "Warning")
+            $res = [DsuMessageBox]::Show("Are you sure you want to clear all entered data?", "Confirm Reset", "YesNo", "Warning")
             if ($res -ne "Yes") { return }
         }
+        Reset-InspectionDetection
         $serialInput.Text = ""
         $notesInput.Text = ""
-        $additionalTimeInput.Text = ""
         $Global:EditingRecord = $null
+        Set-InspectionDurationMode
         $saveInspectionBtn.Content = "SAVE INSPECTION"
         $audioStatusLabel.Text = " "
         $audioStatusLabel.Background = "Transparent"
-        $techEmailInput.Text = ""
+        # Settings > "Remember the last technician": keep the email, otherwise clear it
+        $keptEmail = ""
+        if (Get-Setting "RememberLastTech") {
+            $keptEmail = $techEmailInput.Text.Trim()
+            if ([string]::IsNullOrWhiteSpace($keptEmail)) { $keptEmail = [string](Get-Setting "LastTechnician") }
+        }
+        $techEmailInput.Text = $keptEmail
         $lastSavedLabel.Text = " "
         $Global:sessionStopwatch = New-Object System.Diagnostics.Stopwatch
         $Global:isTimerPaused = $true
         $window.FindName("LiveTimerLabel").Foreground = "#DC3545"
         $window.FindName("LiveTimerLabel").Text = "00:00"
-        $window.FindName("PauseTimerBtn").Content = "$([char]0x25B6)"
+        $window.FindName("PauseTimerBtn").Content = "$([char]0xE768)"
         if ($null -ne $Global:uiTimer) { $Global:uiTimer.Start() }
         foreach ($box in $hwBoxes) { $window.FindName($box).SelectedIndex = 0 }
         foreach ($box in $cosmeticBoxes) { $window.FindName($box).SelectedIndex = 0 }
         $window.FindName("rbWipeYes").IsChecked = $false
         Test-FormCompletion
+        # Email kept: detect the hardware again right away (runs in the background)
+        if (-not [string]::IsNullOrWhiteSpace($keptEmail)) { Start-AutoDetect }
     })
 
-# ------------------------------------------------------------
-# DELETE TECHNICIAN EMAIL BUTTON
-# ------------------------------------------------------------
-$window.FindName("DeleteEmailBtn").Add_Click({
-        $emailToDelete = Show-DeleteEmailDialog
-        if ($emailToDelete) {
-            $confirm = [System.Windows.MessageBox]::Show(
-                "Permanently remove '$emailToDelete' from the dropdown?",
-                "Confirm Delete", "YesNo", "Warning"
-            )
-            if ($confirm -eq "Yes") {
-                $Global:SavedEmails = @($Global:SavedEmails | Where-Object { $_ -ne $emailToDelete })
-                $techEmailInput.ItemsSource = $Global:SavedEmails
-                Update-ScriptData
-                [System.Windows.MessageBox]::Show("Email removed and script updated.", "Done", "OK", "Information")
-            }
-        }
-    })
 $window.FindName("FilterBox").Add_SelectionChanged({ Update-Dashboard })
 
 # ------------------------------------------------------------
 # EXPORT ONLY (Creates the single output CSV on the USB)
 # ------------------------------------------------------------
 $window.FindName("ExportBtn").Add_Click({
-        $exportData = @($resultsGrid.ItemsSource)
+        $exportData = @($resultsGrid.ItemsSource | Select-Object -Property $script:DqaCsvColumns)
         if ($exportData.Count -eq 0) {
-            [System.Windows.MessageBox]::Show("No data to export.", "Export", "OK", "Information")
+            [DsuMessageBox]::Show("No data to export.", "Export", "OK", "Information") | Out-Null
             return
         }
-    
-        $usbCheck = (Get-CimInstance -ClassName Win32_LogicalDisk | Where-Object { $_.DriveType -eq 2 -and $_.Size -gt 0 } | Select-Object -First 1).DeviceID
-        $exportDir = if ($usbCheck) { $usbCheck } else { "$env:USERPROFILE\Desktop" }
-    
-        $savePath = "$exportDir\DQA_Output_$(Get-Date -Format 'yyyyMMdd_HHmm').csv"
-    
-        $exportData | Select-Object * -ExcludeProperty Id, RunDate, "start date", Status | Export-Csv -Path $savePath -NoTypeInformation -Force -Encoding UTF8
-        
-        $exportSerials = $exportData | Select-Object -ExpandProperty SerialNumber
-        $allData = @($Global:DatabaseCSV | ConvertFrom-Csv)
-        $remainingData = $allData | Where-Object { $_.SerialNumber -notin $exportSerials }
-        
-        $remainingList = [System.Collections.ArrayList]@($remainingData)
-        for ($k = 0; $k -lt $remainingList.Count; $k++) { $remainingList[$k].Index = ($k + 1) }
-        
-        $csvHeader = "Index,TechnicianEmail,SerialNumber,DurationMins,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
-        if ($remainingList.Count -gt 0) {
-            $newCsvData = ($remainingList | Select-Object -Property Index, TechnicianEmail, SerialNumber, DurationMins, Charging, Screen, Touchscreen, NetworkAdapters, Keyboard, MouseTrackpad, VideoPorts, AudioOutput, Microphone, Camera, USBPorts, PalmRest, Backplate, BaseAndVents, Hinge, Notes, FinalStatus | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
-            $Global:DatabaseCSV = $csvHeader + "`r`n" + $newCsvData
-        }
-        else {
-            $Global:DatabaseCSV = $csvHeader + "`r`n"
-        }
-        Update-ScriptData
-        Update-Dashboard
 
-        [System.Windows.MessageBox]::Show("Output successfully exported to:`n$savePath`n`nExported records have been removed from the database.", "Export Complete", "OK", "Information")
-        Invoke-Item $exportDir
+        $exportMode = [string](Get-Setting "ExportMode")
+        $customFolder = [string](Get-Setting "ExportFolder")
+        $exportDir = [Environment]::GetFolderPath("Desktop")
+        if ($exportMode -eq "Folder" -and $customFolder -and (Test-Path -LiteralPath $customFolder -PathType Container -ErrorAction SilentlyContinue)) {
+            $exportDir = $customFolder
+        }
+        elseif ($exportMode -ne "Desktop") {
+            $usbCheck = (Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=2" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Size -gt 0 } | Select-Object -First 1).DeviceID
+            if ($usbCheck) { $exportDir = "$usbCheck\" }
+        }
+        if ([string]::IsNullOrWhiteSpace($exportDir)) {
+            [DsuMessageBox]::Show("No export folder is available. Choose a folder in Settings.", "Export Error", "OK", "Error") | Out-Null
+            return
+        }
+
+        $allData = @($Global:DatabaseCSV | ConvertFrom-Csv)
+        $exportKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($record in $exportData) { [void]$exportKeys.Add((Get-DqaRecordKey $record)) }
+        $remainingData = @($allData | Where-Object { -not $exportKeys.Contains((Get-DqaRecordKey $_)) })
+        if ($allData.Count - $remainingData.Count -ne $exportData.Count -or $exportKeys.Count -ne $exportData.Count) {
+            [DsuMessageBox]::Show("The displayed rows no longer match inspection history. Refresh the dashboard and try again.", "Export Error", "OK", "Error") | Out-Null
+            Update-Dashboard
+            return
+        }
+
+        $stamp = Get-Date -Format 'yyyyMMdd_HHmmss_fff'
+        $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $savePath = [IO.Path]::Combine($exportDir, "DQA_Output_$($stamp)_$suffix.csv")
+        $exportState = @{ Published = $false }
+        try {
+            Update-ScriptData -DatabaseCSV (ConvertTo-DqaDatabaseCsv $remainingData) -BeforeWrite {
+                Write-DqaExport -Records $exportData -Path $savePath
+                $exportState.Published = $true
+            }
+        }
+        catch {
+            if ($exportState.Published) {
+                $message = "The CSV was saved to:`n$savePath`n`nInspection history could not be updated. The rows are still in DQA.`n`n$($_.Exception.Message)"
+            }
+            else {
+                $message = "The CSV could not be exported. The rows are still in DQA.`n`n$($_.Exception.Message)"
+            }
+            [DsuMessageBox]::Show($message, "Export Error", "OK", "Error") | Out-Null
+            return
+        }
+        Update-Dashboard
+        [DsuMessageBox]::Show("Output successfully exported to:`n$savePath`n`nExported records have been removed from the database.", "Export Complete", "OK", "Information") | Out-Null
+        Invoke-Item -LiteralPath $exportDir -ErrorAction SilentlyContinue
     })
 
 # ------------------------------------------------------------
@@ -2092,11 +3947,13 @@ $window.FindName("ExportBtn").Add_Click({
 $window.FindName("EditBtn").Add_Click({
         $selectedItem = $resultsGrid.SelectedItem
         if ($null -eq $selectedItem) {
-            [System.Windows.MessageBox]::Show("Please select a laptop record from the dashboard to edit.", "No Selection", "OK", "Warning")
+            [DsuMessageBox]::Show("Please select a laptop record from the dashboard to edit.", "No Selection", "OK", "Warning")
             return
         }
 
+        Reset-InspectionDetection
         $Global:EditingRecord = $selectedItem
+        $script:EditingDatabaseCsv = $Global:DatabaseCSV
     
         $techEmailInput.Text = $selectedItem.TechnicianEmail
         $serialInput.Text = $selectedItem.SerialNumber
@@ -2110,7 +3967,7 @@ $window.FindName("EditBtn").Add_Click({
         foreach ($key in $hwBoxesToMap.Keys) { $window.FindName($key).SelectedItem = $selectedItem.($hwBoxesToMap[$key]) }
     
         $notesInput.Text = $selectedItem.Notes
-        $additionalTimeInput.Text = [math]::Round([double]$selectedItem.DurationMins, 1)
+        Set-InspectionDurationMode
     
         $saveInspectionBtn.Content = "UPDATE INSPECTION"
         $window.FindName("MainTabControl").SelectedIndex = 0
@@ -2118,73 +3975,75 @@ $window.FindName("EditBtn").Add_Click({
     })
 
 # ------------------------------------------------------------
-# DELETE SELECTED ROW (Requires PIN: 5555)
+# DELETE SELECTED ROW (Requires PIN)
 # ------------------------------------------------------------
 $window.FindName("DeleteRowBtn").Add_Click({
         $selectedItem = $resultsGrid.SelectedItem
     
         if ($null -eq $selectedItem) {
-            [System.Windows.MessageBox]::Show("Please select a laptop record from the dashboard to delete.", "No Selection", "OK", "Warning")
+            [DsuMessageBox]::Show("Please select a laptop record from the dashboard to delete.", "No Selection", "OK", "Warning")
             return
         }
 
         $enteredPin = Get-PinInput
     
         if (Test-PinValid -EnteredPin $enteredPin) {
-            $allData = [System.Collections.ArrayList]@($Global:DatabaseCSV | ConvertFrom-Csv)
-            $matchIndex = -1
-        
-            for ($i = 0; $i -lt $allData.Count; $i++) {
-                if ($allData[$i].SerialNumber -eq $selectedItem.SerialNumber -and $allData[$i].DurationMins -eq $selectedItem.DurationMins) {
-                    $matchIndex = $i
-                    break
-                }
+            $allData = @($Global:DatabaseCSV | ConvertFrom-Csv)
+            $selectedKey = Get-DqaRecordKey $selectedItem
+            $remainingData = @($allData | Where-Object { (Get-DqaRecordKey $_) -ne $selectedKey })
+            if ($allData.Count - $remainingData.Count -ne 1) {
+                [DsuMessageBox]::Show("Could not locate the exact record in the database.", "Error", "OK", "Error") | Out-Null
+                return
             }
-        
-            if ($matchIndex -ge 0) {
-                $allData.RemoveAt($matchIndex)
-            
-                for ($k = 0; $k -lt $allData.Count; $k++) { $allData[$k].Index = ($k + 1) }
-
-                $csvHeader = "Index,TechnicianEmail,SerialNumber,DurationMins,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
-            
-                if ($allData.Count -gt 0) {
-                    $newCsvData = ($allData | Select-Object -Property Index, TechnicianEmail, SerialNumber, DurationMins, Charging, Screen, Touchscreen, NetworkAdapters, Keyboard, MouseTrackpad, VideoPorts, AudioOutput, Microphone, Camera, USBPorts, PalmRest, Backplate, BaseAndVents, Hinge, Notes, FinalStatus | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1) -join "`r`n"
-                    $Global:DatabaseCSV = $csvHeader + "`r`n" + $newCsvData
-                }
-                else {
-                    $Global:DatabaseCSV = $csvHeader
-                }
-
-                Update-ScriptData
-                Update-Dashboard
-                [System.Windows.MessageBox]::Show("Laptop record '$($selectedItem.SerialNumber)' has been securely deleted.", "Success", "OK", "Information")
+            try {
+                Update-ScriptData -DatabaseCSV (ConvertTo-DqaDatabaseCsv $remainingData)
             }
-            else {
-                [System.Windows.MessageBox]::Show("Could not locate the exact record in the database.", "Error", "OK", "Error")
+            catch {
+                [DsuMessageBox]::Show("The record could not be deleted.`n`n$($_.Exception.Message)", "Delete Error", "OK", "Error") | Out-Null
+                return
             }
-        }
-        elseif ($null -ne $enteredPin) {
-            [System.Windows.MessageBox]::Show("Incorrect PIN entered. Deletion canceled.", "Security Alert", "OK", "Error")
-        }
-    })
-
-# ------------------------------------------------------------
-# CLEAR DASHBOARD (Requires PIN: 5555)
-# ------------------------------------------------------------
-$window.FindName("DeleteDbBtn").Add_Click({
-        $enteredPin = Get-PinInput
-    
-        if (Test-PinValid -EnteredPin $enteredPin) {
-            $Global:DatabaseCSV = "Index,TechnicianEmail,SerialNumber,DurationMins,Charging,Screen,Touchscreen,NetworkAdapters,Keyboard,MouseTrackpad,VideoPorts,AudioOutput,Microphone,Camera,USBPorts,PalmRest,Backplate,BaseAndVents,Hinge,Notes,FinalStatus"
-            Update-ScriptData
             Update-Dashboard
-            [System.Windows.MessageBox]::Show("Laptop history securely cleared from script memory.", "Success", "OK", "Information")
+            [DsuMessageBox]::Show("Laptop record '$($selectedItem.SerialNumber)' has been removed from inspection history.", "Success", "OK", "Information") | Out-Null
         }
         elseif ($null -ne $enteredPin) {
-            [System.Windows.MessageBox]::Show("Incorrect PIN entered. Deletion canceled.", "Security Alert", "OK", "Error")
+            [DsuMessageBox]::Show("Incorrect PIN entered. Deletion canceled.", "Security Alert", "OK", "Error")
         }
     })
+
+# ------------------------------------------------------------
+# CLEAR ALL HISTORY (Settings > Data; confirmation + Admin PIN)
+# ------------------------------------------------------------
+function Invoke-ClearAllHistory {
+    $count = 0
+    if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) { $count = @($Global:DatabaseCSV | ConvertFrom-Csv).Count }
+    if ($count -eq 0) {
+        [DsuMessageBox]::Show("There are no saved records to clear.", "Clear All History", "OK", "Information") | Out-Null
+        return $false
+    }
+    $btns = @(
+        @{ Text = "Delete all $count records"; Result = "Yes"; Style = "Danger" },
+        @{ Text = "Cancel"; Result = "No"; Style = "Secondary"; IsDefault = $true; IsCancel = $true }
+    )
+    $sure = Show-DsuDialog -Title "Clear All History" -Kind "Warning" -Buttons $btns -DefaultResult "No" -Width 460 `
+        -Message "This permanently deletes all $count saved inspection records from this tool.`n`nExport them first if you still need them. The Admin PIN is required next."
+    if ($sure -ne "Yes") { return $false }
+
+    $enteredPin = Get-PinInput
+    if (Test-PinValid -EnteredPin $enteredPin) {
+        try { Update-ScriptData -DatabaseCSV ($script:DqaCsvColumns -join ',') }
+        catch {
+            [DsuMessageBox]::Show("Inspection history could not be cleared.`n`n$($_.Exception.Message)", "Clear History Error", "OK", "Error") | Out-Null
+            return $false
+        }
+        Update-Dashboard
+        [DsuMessageBox]::Show("All inspection history has been cleared.", "Success", "OK", "Information") | Out-Null
+        return $true
+    }
+    elseif ($null -ne $enteredPin) {
+        [DsuMessageBox]::Show("Incorrect PIN entered. Nothing was deleted.", "Security Alert", "OK", "Error") | Out-Null
+    }
+    return $false
+}
 # ------------------------------------------------------------
 # KEYBOARD SHORTCUTS
 # ------------------------------------------------------------
@@ -2285,44 +4144,827 @@ $window.Add_KeyDown({
     })
 
 # ------------------------------------------------------------
+# SETTINGS WINDOW (gear button in the header)
+# Changes apply as they are saved to this script or its EXE data file.
+# ------------------------------------------------------------
+function Show-SettingsWindow {
+    [xml]$setXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Settings" Width="1112" SizeToContent="Height" ResizeMode="NoResize" WindowStyle="None"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="Transparent" AllowsTransparency="True"
+        FontFamily="Segoe UI" FontSize="13" SnapsToDevicePixels="True" UseLayoutRounding="True">
+    <Window.Resources>
+        <!-- Card: white box; its colored header band is the section's color code -->
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#E3E6EA"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Margin" Value="0"/>
+        </Style>
+        <Style x:Key="CardHead" TargetType="Border">
+            <Setter Property="CornerRadius" Value="7,7,0,0"/>
+            <Setter Property="BorderThickness" Value="0,0,0,3"/>
+            <Setter Property="Padding" Value="14,9"/>
+        </Style>
+        <Style x:Key="CardIcon" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+        </Style>
+        <Style x:Key="CardTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="CardBody" TargetType="StackPanel">
+            <Setter Property="Margin" Value="16,12,16,14"/>
+        </Style>
+        <Style x:Key="Label" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#1F2326"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="Hint" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="#6C757D"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style x:Key="Btn" TargetType="Button">
+            <Setter Property="Background" Value="#00A9E0"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.88"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="bd" Property="Opacity" Value="0.45"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Close (X) button in the navy header -->
+        <Style x:Key="CloseX" TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="Transparent" CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="#0087B3"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- On/off switch: the knob slides and the track fades from grey to DSU blue -->
+        <Style x:Key="Switch" TargetType="CheckBox">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Grid x:Name="root" Width="44" Height="24" Background="Transparent">
+                            <Border x:Name="trackOff" CornerRadius="12" Background="#C9CED4"/>
+                            <Border x:Name="trackOn" CornerRadius="12" Background="#00A9E0" Opacity="0"/>
+                            <Ellipse x:Name="knob" Width="18" Height="18" Fill="White" HorizontalAlignment="Left" Margin="3,0,0,0">
+                                <Ellipse.Effect><DropShadowEffect BlurRadius="4" ShadowDepth="1" Direction="270" Opacity="0.30"/></Ellipse.Effect>
+                                <Ellipse.RenderTransform><TranslateTransform X="0"/></Ellipse.RenderTransform>
+                            </Ellipse>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="knob" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" To="20" Duration="0:0:0.15"/>
+                                            <DoubleAnimation Storyboard.TargetName="trackOn" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.15"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="knob" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" To="0" Duration="0:0:0.15"/>
+                                            <DoubleAnimation Storyboard.TargetName="trackOn" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.15"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="root" Property="Opacity" Value="0.88"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="root" Property="Opacity" Value="0.5"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Radio buttons: round ring, DSU-blue dot when selected -->
+        <Style TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="#1F2326"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Grid Background="Transparent">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Grid Width="18" Height="18" VerticalAlignment="Top" Margin="0,0,0,0">
+                                <Ellipse x:Name="ring" Stroke="#8E959C" StrokeThickness="1.5" Fill="White"/>
+                                <Ellipse x:Name="dot" Width="8" Height="8" Fill="#00A9E0" Opacity="0"/>
+                            </Grid>
+                            <ContentPresenter Grid.Column="1" Margin="9,0,0,0" VerticalAlignment="Top" RecognizesAccessKey="True"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ring" Property="Stroke" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="ring" Property="Stroke" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="ring" Property="Stroke" Value="#00A9E0"/>
+                                <Setter TargetName="ring" Property="StrokeThickness" Value="2"/>
+                                <Setter TargetName="dot" Property="Opacity" Value="1"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Rounded text boxes (email input, custom folder) -->
+        <Style TargetType="TextBox">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#C5CBD3"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" Focusable="False" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Bd" Property="BorderBrush" Value="#00A9E0"/></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Bd" Property="Opacity" Value="0.55"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Rounded email list with rounded row highlights -->
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#C5CBD3"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBox">
+                        <Border CornerRadius="6" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="3" SnapsToDevicePixels="True">
+                            <ScrollViewer Focusable="False" HorizontalScrollBarVisibility="{TemplateBinding ScrollViewer.HorizontalScrollBarVisibility}" VerticalScrollBarVisibility="Auto">
+                                <ItemsPresenter/>
+                            </ScrollViewer>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd" CornerRadius="4" Padding="8,4" Margin="0,1" Background="Transparent">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="#E6F6FC"/></Trigger>
+                            <Trigger Property="IsSelected" Value="True"><Setter TargetName="Bd" Property="Background" Value="#D2EEF9"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Slim rounded scrollbars (same as the main screen) -->
+        <Style x:Key="SetScrollPageButton" TargetType="RepeatButton">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SetScrollThumb" TargetType="Thumb">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="tb" CornerRadius="4" Background="#B8BEC4"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="tb" Property="Background" Value="#8E959C"/></Trigger>
+                            <Trigger Property="IsDragging" Value="True"><Setter TargetName="tb" Property="Background" Value="#00A9E0"/></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="ScrollBar">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Width" Value="12"/>
+            <Setter Property="MinWidth" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Border CornerRadius="6" Background="#EEF0F2" Margin="2">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource SetScrollPageButton}" Command="ScrollBar.PageUpCommand"/></Track.DecreaseRepeatButton>
+                                <Track.Thumb><Thumb Style="{StaticResource SetScrollThumb}" Margin="1"/></Track.Thumb>
+                                <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource SetScrollPageButton}" Command="ScrollBar.PageDownCommand"/></Track.IncreaseRepeatButton>
+                            </Track>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto"/>
+                    <Setter Property="MinWidth" Value="0"/>
+                    <Setter Property="Height" Value="12"/>
+                    <Setter Property="MinHeight" Value="12"/>
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ScrollBar">
+                                <Border CornerRadius="6" Background="#EEF0F2" Margin="2">
+                                    <Track x:Name="PART_Track" IsDirectionReversed="False">
+                                        <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource SetScrollPageButton}" Command="ScrollBar.PageLeftCommand"/></Track.DecreaseRepeatButton>
+                                        <Track.Thumb><Thumb Style="{StaticResource SetScrollThumb}" Margin="1"/></Track.Thumb>
+                                        <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource SetScrollPageButton}" Command="ScrollBar.PageRightCommand"/></Track.IncreaseRepeatButton>
+                                    </Track>
+                                </Border>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="KeyCap" TargetType="Border">
+            <Setter Property="Background" Value="#EEF3F7"/>
+            <Setter Property="BorderBrush" Value="#C5CBD3"/>
+            <Setter Property="BorderThickness" Value="1,1,1,2"/>
+            <Setter Property="CornerRadius" Value="5"/>
+            <Setter Property="Padding" Value="7,2"/>
+            <Setter Property="Margin" Value="0,0,0,7"/>
+            <Setter Property="MinWidth" Value="62"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+        </Style>
+        <Style x:Key="KeyCapText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#003552"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="KeyDesc" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#1F2326"/>
+            <Setter Property="VerticalAlignment" Value="Top"/>
+            <Setter Property="Margin" Value="10,2,0,7"/>
+        </Style>
+    </Window.Resources>
+
+    <!-- Rounded window: shadow layer + rounded panel (the window itself is transparent) -->
+    <Grid Margin="16">
+        <Border CornerRadius="12" Background="#F8FAFC">
+            <Border.Effect><DropShadowEffect BlurRadius="22" ShadowDepth="4" Direction="270" Opacity="0.35"/></Border.Effect>
+        </Border>
+        <Border CornerRadius="12" Background="#F8FAFC" BorderBrush="#003552" BorderThickness="1">
+    <DockPanel>
+        <!-- Header: drag to move; X closes Settings -->
+        <Border x:Name="SetHeader" DockPanel.Dock="Top" Background="#003552" CornerRadius="11,11,0,0" Padding="20,10,10,10">
+            <DockPanel>
+                <Button x:Name="BtnCloseX" DockPanel.Dock="Right" Style="{StaticResource CloseX}" Width="38" Height="38" ToolTip="Close settings (Esc)">
+                    <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="14" Foreground="White"/>
+                </Button>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="20" Foreground="#00A9E0" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <TextBlock Text="Settings" FontSize="20" FontWeight="Bold" Foreground="White" VerticalAlignment="Center"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+        <Border DockPanel.Dock="Top" Height="3" Background="#00A9E0"/>
+
+        <Border DockPanel.Dock="Bottom" Background="White" BorderBrush="#E3E6EA" BorderThickness="0,1,0,0" CornerRadius="0,0,11,11" Padding="20,12">
+            <TextBlock x:Name="SettingsSaveStatus" TextWrapping="Wrap" FontWeight="SemiBold"/>
+        </Border>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <!-- Even 3 x 2 grid: every card in a row has the same height, all gaps are 16 px -->
+            <Grid Margin="20,18,20,18">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="16"/><RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Row 1 -->
+                <Border Style="{StaticResource Card}" Grid.Row="0" Grid.Column="0">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Style="{StaticResource CardHead}" Background="#EEF3F7" BorderBrush="#00A9E0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE9D9;" Style="{StaticResource CardIcon}" Foreground="#00A9E0"/>
+                                <TextBlock Text="Tests" Style="{StaticResource CardTitle}" Foreground="#003552"/>
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Style="{StaticResource CardBody}">
+                            <TextBlock Text="Test volume" Style="{StaticResource Label}" Margin="0,0,0,4"/>
+                            <DockPanel Margin="0,0,0,14">
+                                <Button x:Name="BtnPreviewChime" DockPanel.Dock="Right" Content="Preview" Style="{StaticResource Btn}" Height="28" Margin="10,0,0,0"/>
+                                <TextBlock x:Name="SetVolumeText" DockPanel.Dock="Right" Text="25%" FontWeight="Bold" Width="40" TextAlignment="Right" VerticalAlignment="Center"/>
+                                <Slider x:Name="SetVolume" Minimum="5" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                            </DockPanel>
+
+                            <DockPanel Margin="0,0,0,8">
+                                <ComboBox x:Name="SetAudioSound" DockPanel.Dock="Right" Width="142" Height="28"
+                                          AutomationProperties.Name="Test sound"/>
+                                <TextBlock Text="Test sound" Style="{StaticResource Label}"/>
+                            </DockPanel>
+                            <DockPanel Margin="0,0,0,8">
+                                <ComboBox x:Name="SetTouchTargets" DockPanel.Dock="Right" Width="90" Height="28"/>
+                                <TextBlock Text="Touch circles" Style="{StaticResource Label}"/>
+                            </DockPanel>
+                            <DockPanel Margin="0,0,0,4">
+                                <ComboBox x:Name="SetTouchSeconds" DockPanel.Dock="Right" Width="90" Height="28"/>
+                                <TextBlock Text="Touch time (s)" Style="{StaticResource Label}"/>
+                            </DockPanel>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Grid.Row="0" Grid.Column="2">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Style="{StaticResource CardHead}" Background="#EEF3F7" BorderBrush="#00A9E0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE715;" Style="{StaticResource CardIcon}" Foreground="#00A9E0"/>
+                                <TextBlock Text="Technician Emails" Style="{StaticResource CardTitle}" Foreground="#003552"/>
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Style="{StaticResource CardBody}">
+                            <DockPanel Margin="0,0,0,8">
+                                <Button x:Name="BtnRemoveEmail" DockPanel.Dock="Right" Content="Remove" Style="{StaticResource Btn}" Background="#4D4F53" Width="80" VerticalAlignment="Top" Margin="8,0,0,0"/>
+                                <ListBox x:Name="EmailList" Height="96" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" ToolTip="{Binding}"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                            <DockPanel Margin="0,0,0,12">
+                                <Button x:Name="BtnAddEmail" DockPanel.Dock="Right" Content="Add" Style="{StaticResource Btn}" Background="#00A9E0" Width="80" Margin="8,0,0,0"/>
+                                <Grid>
+                                    <TextBox x:Name="NewEmailBox" Height="32" VerticalContentAlignment="Center" Padding="8,0"/>
+                                    <TextBlock x:Name="NewEmailHint" Text="first.last@trojans.dsu.edu" Foreground="#9A9C9E" Margin="11,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                                </Grid>
+                            </DockPanel>
+                            <DockPanel>
+                                <CheckBox x:Name="SetRememberTech" DockPanel.Dock="Right" Style="{StaticResource Switch}" Margin="8,0,0,0"/>
+                                <StackPanel>
+                                    <TextBlock Text="Remember last technician" Style="{StaticResource Label}"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Grid.Row="0" Grid.Column="4">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Style="{StaticResource CardHead}" Background="#EEF3F7" BorderBrush="#00A9E0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE701;" Style="{StaticResource CardIcon}" Foreground="#00A9E0"/>
+                                <TextBlock Text="General" Style="{StaticResource CardTitle}" Foreground="#003552"/>
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Style="{StaticResource CardBody}">
+                            <DockPanel Margin="0,0,0,12">
+                                <CheckBox x:Name="SetWifi" DockPanel.Dock="Right" Style="{StaticResource Switch}" Margin="8,0,0,0"/>
+                                <StackPanel>
+                                    <TextBlock Text="Auto-connect Guest Wi-Fi" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </DockPanel>
+                            <DockPanel>
+                                <CheckBox x:Name="SetSaveSound" DockPanel.Dock="Right" Style="{StaticResource Switch}" Margin="8,0,0,0"/>
+                                <StackPanel>
+                                    <TextBlock Text="Sound on save" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- Row 2 -->
+                <Border Style="{StaticResource Card}" Grid.Row="2" Grid.Column="0">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Style="{StaticResource CardHead}" Background="#EEF3F7" BorderBrush="#00A9E0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE898;" Style="{StaticResource CardIcon}" Foreground="#00A9E0"/>
+                                <TextBlock Text="Export" Style="{StaticResource CardTitle}" Foreground="#003552"/>
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Style="{StaticResource CardBody}">
+                            <RadioButton x:Name="ExportAuto" GroupName="ExportDest" Margin="0,0,0,6">
+                                <TextBlock Text="USB drive, else Desktop" TextWrapping="Wrap"/>
+                            </RadioButton>
+                            <RadioButton x:Name="ExportDesktop" GroupName="ExportDest" Content="Desktop" Margin="0,0,0,6"/>
+                            <RadioButton x:Name="ExportFolder" GroupName="ExportDest" Content="Custom folder" Margin="0,0,0,6"/>
+                            <DockPanel>
+                                <Button x:Name="BtnBrowse" DockPanel.Dock="Right" Content="Browse..." Style="{StaticResource Btn}" Background="#00A9E0" Height="30" Margin="8,0,0,0"/>
+                                <TextBox x:Name="ExportFolderText" IsReadOnly="True" Height="30" VerticalContentAlignment="Center" FontSize="12" Background="#F8F9FA"/>
+                            </DockPanel>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Grid.Row="2" Grid.Column="2">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Style="{StaticResource CardHead}" Background="#EEF3F7" BorderBrush="#00A9E0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE74D;" Style="{StaticResource CardIcon}" Foreground="#00A9E0"/>
+                                <TextBlock Text="Data" Style="{StaticResource CardTitle}" Foreground="#003552"/>
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Style="{StaticResource CardBody}">
+                            <TextBlock x:Name="RecordCountText" FontWeight="SemiBold" Foreground="#003552" Margin="0,0,0,4"/>
+                            <TextBlock Text="Permanent. Admin PIN required." Style="{StaticResource Hint}" Margin="0,0,0,10"/>
+                            <Button x:Name="BtnClearAll" Content="Clear All History" Style="{StaticResource Btn}" Background="#DC3545" HorizontalAlignment="Left"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Grid.Row="2" Grid.Column="4">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Style="{StaticResource CardHead}" Background="#EEF3F7" BorderBrush="#00A9E0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE765;" Style="{StaticResource CardIcon}" Foreground="#00A9E0"/>
+                                <TextBlock Text="Keyboard Shortcuts" Style="{StaticResource CardTitle}" Foreground="#003552"/>
+                            </StackPanel>
+                        </Border>
+                        <Grid Margin="16,12,16,7">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <Border Grid.Row="0" Style="{StaticResource KeyCap}"><TextBlock Text="Ctrl+S" Style="{StaticResource KeyCapText}"/></Border>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="Save" Style="{StaticResource KeyDesc}"/>
+                            <Border Grid.Row="1" Style="{StaticResource KeyCap}"><TextBlock Text="Ctrl+R" Style="{StaticResource KeyCapText}"/></Border>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="Reset form" Style="{StaticResource KeyDesc}"/>
+                            <Border Grid.Row="2" Style="{StaticResource KeyCap}"><TextBlock Text="Ctrl+A" Style="{StaticResource KeyCapText}"/></Border>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="Auto-fill" Style="{StaticResource KeyDesc}"/>
+                            <Border Grid.Row="3" Style="{StaticResource KeyCap}"><TextBlock Text="Ctrl+E" Style="{StaticResource KeyCapText}"/></Border>
+                            <TextBlock Grid.Row="3" Grid.Column="1" Text="Export CSV" Style="{StaticResource KeyDesc}"/>
+                            <Border Grid.Row="4" Style="{StaticResource KeyCap}"><TextBlock Text="Ctrl+F" Style="{StaticResource KeyCapText}"/></Border>
+                            <TextBlock Grid.Row="4" Grid.Column="1" Text="Search" Style="{StaticResource KeyDesc}"/>
+                            <Border Grid.Row="5" Style="{StaticResource KeyCap}"><TextBlock Text="Ctrl+1 / 2" Style="{StaticResource KeyCapText}"/></Border>
+                            <TextBlock Grid.Row="5" Grid.Column="1" Text="Switch tabs" Style="{StaticResource KeyDesc}"/>
+                            <Border Grid.Row="6" Style="{StaticResource KeyCap}"><TextBlock Text="Enter" Style="{StaticResource KeyCapText}"/></Border>
+                            <TextBlock Grid.Row="6" Grid.Column="1" Text="Next value" Style="{StaticResource KeyDesc}"/>
+                        </Grid>
+                    </DockPanel>
+                </Border>
+            </Grid>
+        </ScrollViewer>
+    </DockPanel>
+        </Border>
+    </Grid>
+</Window>
+'@
+    $setWin = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $setXaml))
+    Set-DqaFocusVisual $setWin
+    # Share the main window's dropdown styles. Settings dimensions come from its XAML.
+    $setWin.Resources[[System.Windows.Controls.ComboBox]] = $window.Resources[[System.Windows.Controls.ComboBox]]
+    $setWin.Resources[[System.Windows.Controls.ComboBoxItem]] = $window.Resources[[System.Windows.Controls.ComboBoxItem]]
+    $setWin.Owner = $window
+    # Never larger than the screen (the cards scroll on small screens)
+    $workArea = [System.Windows.SystemParameters]::WorkArea
+    $setWin.Width = [Math]::Min(1112, $workArea.Width)
+    $setWin.MaxHeight = $workArea.Height - 20
+
+    # Default position: centred across the main window, just below its navy header (the header and timer stay visible)
+    $setWin.WindowStartupLocation = "Manual"
+    $setWin.Add_Loaded({
+            try {
+                $source = [System.Windows.PresentationSource]::FromVisual($window)
+                $toDip = $source.CompositionTarget.TransformFromDevice
+                $root = $window.Content
+                $rootTopLeft = $toDip.Transform($root.PointToScreen((New-Object System.Windows.Point(0, 0))))
+                $tabsTop = $toDip.Transform($window.FindName("MainTabControl").PointToScreen((New-Object System.Windows.Point(0, 0)))).Y
+                $left = $rootTopLeft.X + ($root.ActualWidth - $setWin.ActualWidth) / 2
+                $top = $tabsTop + 4      # the visible panel starts ~20 px below the header (16 px is the shadow margin)
+                $wa = [System.Windows.SystemParameters]::WorkArea
+                if ($top + $setWin.ActualHeight -gt $wa.Bottom) { $top = [Math]::Max($wa.Top, $wa.Bottom - $setWin.ActualHeight) }
+                $left = [Math]::Min([Math]::Max($wa.Left, $left), [Math]::Max($wa.Left, $wa.Right - $setWin.ActualWidth))
+                $setWin.Left = $left
+                $setWin.Top = $top
+            }
+            catch {
+                # Fallback: centre on screen
+                $wa = [System.Windows.SystemParameters]::WorkArea
+                $setWin.Left = $wa.Left + ($wa.Width - $setWin.ActualWidth) / 2
+                $setWin.Top = $wa.Top + ($wa.Height - $setWin.ActualHeight) / 2
+            }
+        })
+
+    $c = @{}
+    foreach ($n in @("SetVolume", "SetVolumeText", "SetAudioSound", "BtnPreviewChime", "SetTouchTargets", "SetTouchSeconds",
+            "EmailList", "BtnRemoveEmail", "NewEmailBox", "NewEmailHint", "BtnAddEmail", "SetRememberTech",
+            "ExportAuto", "ExportDesktop", "ExportFolder", "ExportFolderText", "BtnBrowse",
+            "SetWifi", "SetSaveSound", "SettingsSaveStatus", "BtnClearAll", "RecordCountText", "BtnCloseX", "SetHeader")) {
+        $c[$n] = $setWin.FindName($n)
+    }
+
+    # ---- Load the current values ----
+    $c.SetVolume.Value = [int](Get-Setting "AudioVolume")
+    $c.SetVolumeText.Text = "$([int]$c.SetVolume.Value)%"
+    $c.SetAudioSound.ItemsSource = @(
+        $Global:AppSettingsDefaults.AudioSound, "Bright rise", "High cascade", "Major cadence", "Echo melody", "Signal fanfare"
+    )
+    $c.SetAudioSound.SelectedItem = [string](Get-Setting "AudioSound")
+    if ($null -eq $c.SetAudioSound.SelectedItem) { $c.SetAudioSound.SelectedIndex = 0 }
+
+
+    $c.SetTouchTargets.ItemsSource = @(3, 4, 5, 6, 7, 8, 9, 10)
+    $c.SetTouchTargets.SelectedItem = [int](Get-Setting "TouchTargets")
+    if ($null -eq $c.SetTouchTargets.SelectedItem) { $c.SetTouchTargets.SelectedItem = 5 }
+    $c.SetTouchSeconds.ItemsSource = @(3, 4, 5, 6, 7, 8, 10, 15, 20)
+    $c.SetTouchSeconds.SelectedItem = [int](Get-Setting "TouchSeconds")
+    if ($null -eq $c.SetTouchSeconds.SelectedItem) { $c.SetTouchSeconds.SelectedItem = 5 }
+
+    # The dialog edits its own list, then publishes it after a successful write.
+    $workEmails = New-Object System.Collections.ObjectModel.ObservableCollection[string]
+    foreach ($em in $Global:SavedEmails) { if (-not [string]::IsNullOrWhiteSpace($em)) { $workEmails.Add([string]$em) } }
+    $c.EmailList.ItemsSource = $workEmails
+    $c.SetRememberTech.IsChecked = [bool](Get-Setting "RememberLastTech")
+
+    switch ([string](Get-Setting "ExportMode")) {
+        "Desktop" { $c.ExportDesktop.IsChecked = $true }
+        "Folder" { $c.ExportFolder.IsChecked = $true }
+        default { $c.ExportAuto.IsChecked = $true }
+    }
+    $c.ExportFolderText.Text = [string](Get-Setting "ExportFolder")
+
+    $c.SetWifi.IsChecked = [bool](Get-Setting "WifiAutoConnect")
+    $c.SetSaveSound.IsChecked = [bool](Get-Setting "SaveSound")
+
+    $readDraft = {
+        [ordered]@{
+            Settings = [ordered]@{
+                AudioVolume      = [int]$c.SetVolume.Value
+                AudioSound       = [string]$c.SetAudioSound.SelectedItem
+                TouchTargets     = [int]$c.SetTouchTargets.SelectedItem
+                TouchSeconds     = [int]$c.SetTouchSeconds.SelectedItem
+                WifiAutoConnect  = [bool]$c.SetWifi.IsChecked
+                SaveSound        = [bool]$c.SetSaveSound.IsChecked
+                RememberLastTech = [bool]$c.SetRememberTech.IsChecked
+                LastTechnician   = if ($c.SetRememberTech.IsChecked) { Get-Setting "LastTechnician" } else { "" }
+                ExportMode       = if ($c.ExportDesktop.IsChecked) { "Desktop" } elseif ($c.ExportFolder.IsChecked) { "Folder" } else { "Auto" }
+                ExportFolder     = $c.ExportFolderText.Text.Trim()
+            }
+            Emails = [string[]]$workEmails
+        }
+    }
+
+    $saveState = @{
+        Snapshot = (& $readDraft | ConvertTo-Json -Compress -Depth 4)
+        Failed = $false
+    }
+    $volumeSaveTimer = [System.Windows.Threading.DispatcherTimer]::new()
+    $volumeSaveTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+
+    $showSaveStatus = {
+        param([bool]$FolderRequired)
+        $c.SettingsSaveStatus.ToolTip = $null
+        $savedAt = [DateTimeOffset]::MinValue
+        if ($FolderRequired) {
+            $c.SettingsSaveStatus.Text = "Choose an existing folder for custom exports."
+            $c.SettingsSaveStatus.Foreground = "#805500"
+        }
+        elseif ([DateTimeOffset]::TryParse([string](Get-Setting "SettingsSavedAt"), [ref]$savedAt)) {
+            $c.SettingsSaveStatus.Text = "Saved for next launch ($($savedAt.ToLocalTime().ToString('g')))"
+            $c.SettingsSaveStatus.Foreground = "#17643A"
+        }
+        else {
+            $c.SettingsSaveStatus.Text = "Settings save automatically"
+            $c.SettingsSaveStatus.Foreground = "#4D4F53"
+        }
+    }
+
+    $saveSettings = {
+        $volumeSaveTimer.Stop()
+        $draft = & $readDraft
+        $folder = $draft.Settings["ExportFolder"]
+        $folderRequired = $draft.Settings["ExportMode"] -eq "Folder" -and
+            ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path -LiteralPath $folder -PathType Container -ErrorAction SilentlyContinue))
+        if ($folderRequired) {
+            # Keep the saved destination while the technician chooses a valid folder.
+            $draft.Settings["ExportMode"] = [string](Get-Setting "ExportMode")
+            $draft.Settings["ExportFolder"] = [string](Get-Setting "ExportFolder")
+        }
+
+        $snapshot = $draft | ConvertTo-Json -Compress -Depth 4
+        if ($snapshot -cne $saveState.Snapshot) {
+            $draft.Settings["SettingsSavedAt"] = [DateTimeOffset]::UtcNow.ToString("o")
+            $emailsChanged = ($Global:SavedEmails -join [char]10) -cne ($draft.Emails -join [char]10)
+            try {
+                Update-ScriptData -Settings $draft.Settings -SavedEmails $draft.Emails
+            }
+            catch {
+                $saveState.Failed = $true
+                $c.SettingsSaveStatus.Text = "Couldn't save settings. $($_.Exception.Message)"
+                $c.SettingsSaveStatus.Foreground = "#B42318"
+                $c.SettingsSaveStatus.ToolTip = $_.Exception.Message
+                return
+            }
+
+            $saveState.Snapshot = $snapshot
+            # Refresh the email dropdown only when the list changes.
+            if ($emailsChanged) {
+                $typed = $techEmailInput.Text
+                $techEmailInput.ItemsSource = $Global:SavedEmails
+                $techEmailInput.Text = $typed
+            }
+        }
+
+        $saveState.Failed = $false
+        & $showSaveStatus $folderRequired
+    }
+    & $showSaveStatus
+
+    # Batch slider movement into one write. Other controls save on change.
+    $volumeSaveTimer.Add_Tick($saveSettings)
+    $c.SetVolume.Add_ValueChanged({
+            $c.SetVolumeText.Text = "$([int]$c.SetVolume.Value)%"
+            $volumeSaveTimer.Stop()
+            $volumeSaveTimer.Start()
+        })
+    $c.SetAudioSound.Add_SelectionChanged($saveSettings)
+    $c.SetTouchTargets.Add_SelectionChanged($saveSettings)
+    $c.SetTouchSeconds.Add_SelectionChanged($saveSettings)
+    foreach ($name in @("SetWifi", "SetSaveSound", "SetRememberTech")) {
+        $c[$name].Add_Checked($saveSettings)
+        $c[$name].Add_Unchecked($saveSettings)
+    }
+    foreach ($name in @("ExportAuto", "ExportDesktop", "ExportFolder")) {
+        $c[$name].Add_Checked($saveSettings)
+    }
+    $workEmails.Add_CollectionChanged($saveSettings)
+
+    $c.BtnPreviewChime.Add_Click({
+            if ($Global:audioState -gt 0) {
+                [DsuMessageBox]::Show("Wait for the current audio test to finish before previewing a sound.", "Test Sound", "OK", "Information") | Out-Null
+                return
+            }
+            [AudioHelper]::SetVolume([int]$c.SetVolume.Value)
+            if (-not (Start-Chime -Sound $c.SetAudioSound.SelectedItem)) {
+                [DsuMessageBox]::Show("The selected sound could not play. Check the Windows audio output.", "Test Sound", "OK", "Warning") | Out-Null
+            }
+        })
+
+    $c.NewEmailBox.Add_TextChanged({
+            $c.NewEmailHint.Visibility = if ([string]::IsNullOrEmpty($c.NewEmailBox.Text)) { "Visible" } else { "Collapsed" }
+        })
+
+    $addEmail = {
+        $new = $c.NewEmailBox.Text.Trim()
+        if ([string]::IsNullOrWhiteSpace($new)) { return }
+        if ($new -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+            [DsuMessageBox]::Show("Please enter a valid email address.", "Technician Emails", "OK", "Warning") | Out-Null
+            return
+        }
+        $new = Format-TitleCaseEmail $new
+        if (@($workEmails | Where-Object { $_ -ieq $new }).Count -gt 0) {
+            [DsuMessageBox]::Show("That email is already in the list.", "Technician Emails", "OK", "Information") | Out-Null
+            return
+        }
+        $workEmails.Add($new)
+        $c.NewEmailBox.Text = ""
+    }
+    $c.BtnAddEmail.Add_Click({ & $addEmail })
+    $c.NewEmailBox.Add_KeyDown({
+            param($s, $e)
+            if ($e.Key -eq "Return") { & $addEmail; $e.Handled = $true }
+        })
+
+    $c.BtnRemoveEmail.Add_Click({
+            $sel = $c.EmailList.SelectedItem
+            if ($sel) { $workEmails.Remove([string]$sel) | Out-Null }
+        })
+
+    $c.BtnBrowse.Add_Click({
+            $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dlg.Description = "Choose where exported CSV files are saved"
+            if (-not [string]::IsNullOrWhiteSpace($c.ExportFolderText.Text) -and
+                (Test-Path -LiteralPath $c.ExportFolderText.Text -PathType Container)) {
+                $dlg.SelectedPath = $c.ExportFolderText.Text
+            }
+            if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                $c.ExportFolderText.Text = $dlg.SelectedPath
+                if ($c.ExportFolder.IsChecked) { & $saveSettings }
+                else { $c.ExportFolder.IsChecked = $true }
+            }
+        })
+
+    # Data: record count + Clear All History (acts immediately, with its own confirmation and PIN)
+    $updateCount = {
+        $n = 0
+        if (-not [string]::IsNullOrWhiteSpace($Global:DatabaseCSV)) { $n = @($Global:DatabaseCSV | ConvertFrom-Csv).Count }
+        $c.RecordCountText.Text = "$n saved record$(if ($n -ne 1) { 's' })"
+        $c.BtnClearAll.IsEnabled = ($n -gt 0)
+    }
+    & $updateCount
+    $c.BtnClearAll.Add_Click({
+            Invoke-ClearAllHistory | Out-Null
+            & $updateCount
+        })
+
+    $c.BtnCloseX.Add_Click({ $setWin.Close() })
+    $setWin.Add_KeyDown({
+            param($sender, $e)
+            if ($e.Key -eq "Escape") {
+                $e.Handled = $true
+                $setWin.Close()
+            }
+        })
+    $setWin.Add_Closing({
+            if ($volumeSaveTimer.IsEnabled -or $saveState.Failed) { & $saveSettings }
+        })
+    # The window has no Windows title bar, so drag it by the navy header.
+    $c.SetHeader.Add_MouseLeftButtonDown({ try { $setWin.DragMove() } catch { } })
+
+    $setWin.ShowDialog() | Out-Null
+}
+
+$window.FindName("SettingsBtn").Add_Click({ Show-SettingsWindow })
+
+# ------------------------------------------------------------
 # DYNAMIC HARDWARE AUTO-DETECTION POLLER (USB & VIDEO)
 # ------------------------------------------------------------
+# Runs in the background (it used to freeze the window for a moment every 2 seconds)
+$Global:HwPollWork = {
+    $r = @{ VideoOK = $false; UsbOK = $false }
+    try {
+        $pnpMonitors = Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Monitor' AND ConfigManagerErrorCode=0" -ErrorAction SilentlyContinue
+        $r.VideoOK = (@($pnpMonitors).Count -gt 1)
+    }
+    catch { }
+    try {
+        # USB flash drive (USBSTOR) or USB mouse/keyboard (mouhid/kbdhid) with a VID/PID, or a removable disk
+        $externalUsbDevices = Get-CimInstance Win32_PnPEntity -Filter "Service='mouhid' OR Service='kbdhid' OR Service='USBSTOR'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.DeviceID -match 'VID_[0-9A-F]+&PID_' }
+        $usbLogical = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2" -ErrorAction SilentlyContinue
+        $r.UsbOK = [bool]($externalUsbDevices -or $usbLogical)
+    }
+    catch { }
+    return $r
+}
+$Global:HwPollRunning = $false
 $hwPollTimer = New-Object System.Windows.Threading.DispatcherTimer
 $hwPollTimer.Interval = [TimeSpan]::FromSeconds(2)
 $hwPollTimer.Add_Tick({
-        # Only poll if the user has entered an email (prevents premature detection)
-        if ([string]::IsNullOrWhiteSpace($techEmailInput.Text)) { return }
+        if ($null -ne $Global:EditingRecord -or [string]::IsNullOrWhiteSpace($techEmailInput.Text)) { return }
+        # Only fill unanswered fields, and leave explicitly selected results alone.
+        if ($window.FindName("cbVideo").SelectedItem -and $window.FindName("cbUSB").SelectedItem) { return }
+        if ($Global:HwPollRunning) { return }
 
-        # Auto-detect External Monitor
-        if ($window.FindName("cbVideo").SelectedItem -ne "Operational") {
-            try {
-                $pnpMonitors = Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Monitor' AND ConfigManagerErrorCode=0" -ErrorAction SilentlyContinue
-                if (@($pnpMonitors).Count -gt 1) {
-                    $window.FindName("cbVideo").SelectedItem = "Operational"
-                    Test-FormCompletion
-                }
-            }
-            catch { }
-        }
-    
-        # Auto-detect External USB Devices
-        if ($window.FindName("cbUSB").SelectedItem -ne "Operational") {
-            try {
-                $externalUsbDevices = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | 
-                Where-Object { ($_.Service -match 'mouhid|kbdhid|USBSTOR') -and ($_.DeviceID -match 'VID_[0-9A-F]+&PID_') }
-                
-                $usbLogical = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2" -ErrorAction SilentlyContinue
-            
-                if ($externalUsbDevices -or $usbLogical) {
-                    $window.FindName("cbUSB").SelectedItem = "Operational"
-                    Test-FormCompletion
-                }
-            }
-            catch { }
+        $Global:HwPollRunning = $true
+        Start-BackgroundWork -Work $Global:HwPollWork -Context $script:InspectionGeneration -OnDone {
+            param($result, $generation)
+            $Global:HwPollRunning = $false
+            if ($generation -ne $script:InspectionGeneration -or $null -ne $Global:EditingRecord -or $null -eq $result) { return }
+            Set-DetectedPortResults $result
         }
     })
 $hwPollTimer.Start()
+$window.Add_Closed({
+        try { $hwPollTimer.Stop(); $Global:BgJobTimer.Stop(); $Global:BgPool.Close() } catch { }
+    })
 
+
+# Settings > "Remember the last technician": pre-fill the email at startup
+if ((Get-Setting "RememberLastTech") -and -not [string]::IsNullOrWhiteSpace([string](Get-Setting "LastTechnician"))) {
+    $techEmailInput.Text = [string](Get-Setting "LastTechnician")
+}
 
 Update-Dashboard
 [System.Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvoke(
@@ -2330,5 +4972,3 @@ Update-Dashboard
     [System.Windows.Threading.DispatcherPriority]::Background
 ) | Out-Null
 $window.ShowDialog() | Out-Null
-
-
