@@ -3,3 +3,7 @@
 !/DQA.ps1
 !/README.md
 !/.gitignore
+
+# Local agent instructions (AGENTS.md points to CLAUDE.md); keep both untracked.
+/AGENTS.md
+/CLAUDE.md
